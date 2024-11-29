@@ -74,6 +74,8 @@ class EnhancedROITracker:
                 found_x = round(found_x + sub_pixel_offset_x, 8)
                 found_y = round(found_y + sub_pixel_offset_y, 8)
 
+                print("Update by template match")
+
                 return found_x, found_y, round(max_val, 8)
 
             search_area *= 2
@@ -83,38 +85,79 @@ class EnhancedROITracker:
     @staticmethod
     def _feature_match(image, template, initial_x, initial_y, initial_search_area):
         try:
-            orb = cv2.ORB_create()
-            kp1, des1 = orb.detectAndCompute(template, None)
-            kp2, des2 = orb.detectAndCompute(image, None)
+            # Ensure parameters are float
+            initial_x, initial_y = float(initial_x), float(initial_y)
+            initial_search_area = float(initial_search_area)
 
-            # Nếu không có keypoints hoặc descriptors, fallback sang template matching
-            if des1 is None or des2 is None:
-                return EnhancedROITracker._template_match(image, template, initial_x, initial_y, initial_search_area)
+            # Validate image and template sizes
+            if template.shape[0] > image.shape[0] or template.shape[1] > image.shape[1]:
+                template = cv2.resize(template, (image.shape[1], image.shape[0]), 
+                                    interpolation=cv2.INTER_AREA)
 
-            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-            matches = bf.match(des1, des2)
-            matches = sorted(matches, key=lambda x: x.distance)
-
-            # Lọc các matches gần vùng tìm kiếm ban đầu
-            good_matches = [
-                m for m in matches
-                if hasattr(kp2[m.trainIdx], 'pt') and
-                abs(kp2[m.trainIdx].pt[0] - initial_x) <= initial_search_area and
-                abs(kp2[m.trainIdx].pt[1] - initial_y) <= initial_search_area
+            # Detectors configuration
+            detectors = [
+                cv2.ORB_create(nfeatures=500),
+                cv2.AKAZE_create()
             ]
 
-            if good_matches:
-                best_match = good_matches[0]
-                found_x = round(float(kp2[best_match.trainIdx].pt[0]), 8)
-                found_y = round(float(kp2[best_match.trainIdx].pt[1]), 8)
-                confidence = round(max(0, 1 - (best_match.distance / 500)), 8)
-                return found_x, found_y, confidence
+            for detector in detectors:
+                try:
+                    # Detect keypoints and descriptors
+                    kp1, des1 = detector.detectAndCompute(template, None)
+                    kp2, des2 = detector.detectAndCompute(image, None)
 
-            print("No good matches found, falling back to template matching.")
+                    # Skip if insufficient keypoints
+                    if des1 is None or des2 is None or len(kp1) == 0 or len(kp2) == 0:
+                        continue
+
+                    # Brute Force Matcher
+                    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+                    matches = bf.match(des1, des2)
+                    
+                    # Filter matches near search area
+                    good_matches = [
+                        m for m in matches
+                        if abs(kp2[m.trainIdx].pt[0] - initial_x) <= initial_search_area and
+                        abs(kp2[m.trainIdx].pt[1] - initial_y) <= initial_search_area
+                    ]
+
+                    if good_matches:
+                        # Best match selection
+                        good_matches = sorted(good_matches, key=lambda x: x.distance)
+                        best_match = good_matches[0]
+                        
+                        # Match coordinates
+                        match_x = float(kp2[best_match.trainIdx].pt[0])
+                        match_y = float(kp2[best_match.trainIdx].pt[1])
+
+                        # Create dummy result for subpixel refinement
+                        result = np.zeros((3,3), dtype=np.float32)
+                        result[1,1] = 1.0  # Center point
+                        
+                        # Subpixel refinement
+                        sub_x, sub_y = EnhancedROITracker._subpixel_refinement(result, (1,1))
+                        
+                        # Apply subpixel offset
+                        found_x = round(match_x + sub_x, 8)
+                        found_y = round(match_y + sub_y, 8)
+                        
+                        # Confidence calculation
+                        confidence = round(max(0, 1 - (float(best_match.distance) / 300)), 8)
+                        
+                        print("Update by feature match")
+
+                        return found_x, found_y, confidence
+
+                except Exception as detector_error:
+                    print(f"Detector error: {detector_error}")
+                    continue
+
+            # Fallback to template matching
             return EnhancedROITracker._template_match(image, template, initial_x, initial_y, initial_search_area)
+
         except Exception as e:
-            print(f"Error in _feature_match: {e}")
-            return None, None, None
+            print(f"Feature match error: {e}")
+            return None
 
     @staticmethod
     def _subpixel_refinement(result, max_loc):
@@ -247,7 +290,7 @@ class BaslerCameraROITracker(QMainWindow):
             self.camera.Open()
 
             # Cài đặt thông số camera
-            self.camera.Width.Value = 1024  # Đặt chiều rộng hình ảnh
+            self.camera.Width.Value = 600  # Đặt chiều rộng hình ảnh
             self.camera.Height.Value = 600  # Đặt chiều cao hình ảnh
 
             self.camera.ExposureTime.SetValue(20000)  # Đặt thời gian mở
