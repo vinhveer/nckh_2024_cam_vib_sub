@@ -2,7 +2,7 @@ import sys
 import cv2
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QPushButton, 
-                             QMessageBox, QVBoxLayout, QHBoxLayout, QWidget, QTextEdit, QDialog, QComboBox, QDialogButtonBox)
+                             QMessageBox, QVBoxLayout, QHBoxLayout, QWidget, QDialog, QComboBox, QDialogButtonBox)
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt
 from pypylon import pylon
@@ -13,20 +13,36 @@ import numpy as np
 
 class EnhancedROITracker:
     @staticmethod
-    def multi_method_tracking(image, template, initial_x, initial_y, initial_search_area=50):
+    def multi_method_tracking(image, template, initial_x, initial_y, initial_search_area=50, prev_image=None, method="auto"):
         # Chuyển đổi ảnh và template sang grayscale nếu cần
         gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
         gray_template = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY) if len(template.shape) == 3 else template
-        
-        # Thử phương pháp feature matching trước
-        feature_result = EnhancedROITracker._feature_match(gray_image, gray_template, initial_x, initial_y, initial_search_area)
-        
-        # Nếu feature matching thất bại, chuyển sang template matching
-        if feature_result is None:
-            template_result = EnhancedROITracker._template_match(gray_image, gray_template, initial_x, initial_y, initial_search_area)
-            return template_result
-        
-        return feature_result
+
+        # Xử lý dựa trên phương pháp được chọn
+        if method == "feature_match":
+            return EnhancedROITracker._feature_match(gray_image, gray_template, initial_x, initial_y, initial_search_area)
+        elif method == "optical_flow" and prev_image is not None:
+            return EnhancedROITracker._optical_flow(prev_image, gray_image, initial_x, initial_y)
+        elif method == "template_match":
+            return EnhancedROITracker._template_match(gray_image, gray_template, initial_x, initial_y, initial_search_area)
+        elif method == "auto":
+            # Thử feature matching trước
+            feature_result = EnhancedROITracker._feature_match(gray_image, gray_template, initial_x, initial_y, initial_search_area)
+
+            # Nếu feature matching thất bại, thử optical flow
+            if feature_result is None and prev_image is not None:
+                optical_flow_result = EnhancedROITracker._optical_flow(prev_image, gray_image, initial_x, initial_y)
+                if optical_flow_result is not None:
+                    return optical_flow_result
+
+            # Nếu cả hai phương pháp trên thất bại, chuyển sang template matching
+            if feature_result is None:
+                template_result = EnhancedROITracker._template_match(gray_image, gray_template, initial_x, initial_y, initial_search_area)
+                return template_result
+
+            return feature_result
+        else:
+            raise ValueError(f"Unsupported method: {method}")
 
     @staticmethod
     def _template_match(image, template, initial_x, initial_y, initial_search_area):
@@ -63,51 +79,50 @@ class EnhancedROITracker:
             search_area *= 2
 
         return None
-
+    
     @staticmethod
     def _feature_match(image, template, initial_x, initial_y, initial_search_area):
-        orb = cv2.ORB_create()
-        kp1, des1 = orb.detectAndCompute(template, None)
-        kp2, des2 = orb.detectAndCompute(image, None)
+        try:
+            orb = cv2.ORB_create()
+            kp1, des1 = orb.detectAndCompute(template, None)
+            kp2, des2 = orb.detectAndCompute(image, None)
 
-        if des1 is None or des2 is None:
-            return None
+            # Nếu không có keypoints hoặc descriptors, fallback sang template matching
+            if des1 is None or des2 is None:
+                return EnhancedROITracker._template_match(image, template, initial_x, initial_y, initial_search_area)
 
-        bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
-        matches = bf.match(des1, des2)
-        matches = sorted(matches, key=lambda x: x.distance)
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matches = bf.match(des1, des2)
+            matches = sorted(matches, key=lambda x: x.distance)
 
-        # Lọc các điểm phù hợp gần khu vực khởi tạo
-        good_matches = [
-            m for m in matches 
-            if abs(kp2[m.trainIdx].pt[0] - initial_x) <= initial_search_area and
-            abs(kp2[m.trainIdx].pt[1] - initial_y) <= initial_search_area
-        ]
+            # Lọc các matches gần vùng tìm kiếm ban đầu
+            good_matches = [
+                m for m in matches
+                if hasattr(kp2[m.trainIdx], 'pt') and
+                abs(kp2[m.trainIdx].pt[0] - initial_x) <= initial_search_area and
+                abs(kp2[m.trainIdx].pt[1] - initial_y) <= initial_search_area
+            ]
 
-        if good_matches:
-            best_match = good_matches[0]
-            # Sử dụng tọa độ keypoint với độ chính xác sub-pixel
-            found_x = round(float(kp2[best_match.trainIdx].pt[0]), 8)
-            found_y = round(float(kp2[best_match.trainIdx].pt[1]), 8)
-            confidence = round(max(0, 1 - (best_match.distance / 500)), 8)
-            return found_x, found_y, confidence
+            if good_matches:
+                best_match = good_matches[0]
+                found_x = round(float(kp2[best_match.trainIdx].pt[0]), 8)
+                found_y = round(float(kp2[best_match.trainIdx].pt[1]), 8)
+                confidence = round(max(0, 1 - (best_match.distance / 500)), 8)
+                return found_x, found_y, confidence
 
-        return None
+            print("No good matches found, falling back to template matching.")
+            return EnhancedROITracker._template_match(image, template, initial_x, initial_y, initial_search_area)
+        except Exception as e:
+            print(f"Error in _feature_match: {e}")
+            return None, None, None
 
     @staticmethod
     def _subpixel_refinement(result, max_loc):
-        """
-        Tính toán offset sub-pixel bằng cách kết hợp nhiều phương pháp:
-        1. Gaussian fitting.
-        2. Moments-based refinement.
-        3. Weighted average fallback.
-        """
         x, y = max_loc
         h, w = result.shape
 
         # Gaussian Fitting
         try:
-            # Lấy các điểm lân cận (nếu có)
             dx = [
                 result[y, x - 1] if x > 0 else 0,
                 result[y, x],
@@ -122,10 +137,9 @@ class EnhancedROITracker:
             offset_x_gaussian = (dx[2] - dx[0]) / (2 * (2 * dx[1] - dx[0] - dx[2]) + 1e-8)
             offset_y_gaussian = (dy[2] - dy[0]) / (2 * (2 * dy[1] - dy[0] - dy[2]) + 1e-8)
         except Exception:
-            offset_x_gaussian, offset_y_gaussian = 0, 0  # Fallback nếu Gaussian fitting thất bại
+            offset_x_gaussian, offset_y_gaussian = 0, 0
 
-        # Moments-based refinement
-        roi_size = 3  # ROI kích thước 3x3
+        roi_size = 3
         roi_x_start = max(x - roi_size // 2, 0)
         roi_y_start = max(y - roi_size // 2, 0)
         roi_x_end = min(x + roi_size // 2 + 1, w)
@@ -138,9 +152,8 @@ class EnhancedROITracker:
             offset_x_moments = moments["m10"] / moments["m00"] - x
             offset_y_moments = moments["m01"] / moments["m00"] - y
         else:
-            offset_x_moments, offset_y_moments = 0, 0  # Fallback nếu Moments không xác định được
+            offset_x_moments, offset_y_moments = 0, 0
 
-        # Weighted Average (fallback)
         weighted_sum = np.sum(roi)
         if weighted_sum > 0:
             grid_x, grid_y = np.meshgrid(
@@ -150,10 +163,8 @@ class EnhancedROITracker:
             offset_x_weighted = (np.sum(grid_x * roi) / weighted_sum) - x
             offset_y_weighted = (np.sum(grid_y * roi) / weighted_sum) - y
         else:
-            offset_x_weighted, offset_y_weighted = 0, 0  # Fallback nếu trọng số không hợp lệ
+            offset_x_weighted, offset_y_weighted = 0, 0
 
-        # Kết hợp kết quả
-        # Ưu tiên Gaussian Fitting > Moments > Weighted Average
         if abs(offset_x_gaussian) <= 1 and abs(offset_y_gaussian) <= 1:
             return offset_x_gaussian, offset_y_gaussian
         elif abs(offset_x_moments) <= 1 and abs(offset_y_moments) <= 1:
@@ -324,14 +335,39 @@ class BaslerCameraROITracker(QMainWindow):
             QMessageBox.critical(self, "Error", str(e))
 
     def start_tracking(self):
+        # Kiểm tra điều kiện ban đầu
         if self.template is None:
             QMessageBox.warning(self, "Error", "Please capture and select ROI first")
             return
 
-        self.is_tracking = True
-        self.track()
+        # Tạo dialog chọn method
+        dialog = QDialog(self)
+        dialog.setGeometry(200, 200, 300, 100)
+        dialog.setWindowTitle("Select Tracking Method")
+        
+        # Dropdown chọn method
+        method_selector = QComboBox(dialog)
+        method_selector.addItems(["auto", "feature_match", "template_match"])
+        
+        # Nút OK
+        ok_button = QPushButton("OK", dialog)
+        ok_button.clicked.connect(dialog.accept)
+        
+        # Layout cho dialog
+        layout = QVBoxLayout()
+        layout.addWidget(method_selector)
+        layout.addWidget(ok_button)
+        dialog.setLayout(layout)
 
-    def track(self):
+        # Hiển thị dialog
+        if dialog.exec_() == QDialog.Accepted:
+            selected_method = method_selector.currentText()  # Lấy method được chọn
+            self.is_tracking = True
+            self.track(method=selected_method)  # Gọi hàm track với phương pháp đã chọn
+        else:
+            QMessageBox.information(self, "Info", "Tracking cancelled")
+
+    def track(self, method="auto"):
         prev_x, prev_y = None, None
 
         while self.is_tracking:
@@ -343,7 +379,7 @@ class BaslerCameraROITracker(QMainWindow):
                     center_x = round(float(x1 + x2) / 2, 8)
                     center_y = round(float(y1 + y2) / 2, 8)
 
-                    result = EnhancedROITracker.multi_method_tracking(current_frame, self.template, center_x, center_y, initial_search_area=100)
+                    result = EnhancedROITracker.multi_method_tracking(current_frame, self.template, center_x, center_y, initial_search_area=100, method=method)
 
                     if result:
                         found_x, found_y, confidence = result
