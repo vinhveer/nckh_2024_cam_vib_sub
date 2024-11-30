@@ -16,8 +16,7 @@ if __name__ == "__main__":
 
         /* Buttons - Clean Design */
         QPushButton {
-            font-size: 16px;
-            font-weight: bold;
+            font-size: 20px;
             padding: 12px 25px;
             background-color: #3498db;
             color: white;
@@ -40,15 +39,14 @@ if __name__ == "__main__":
 
         /* Labels - Clean and Professional */
         QLabel {
-            font-size: 18px;
-            font-weight: bold;
+            font-size: 20px;
             color: #34495e;
             margin-bottom: 8px;
         }
 
         /* Combo Boxes - Sleek Dropdown */
         QComboBox {
-            font-size: 16px;
+            font-size: 20px;
             padding: 10px 15px;
             background-color: white;
             color: #2c3e50;
@@ -58,7 +56,7 @@ if __name__ == "__main__":
         }
 
         QComboBox QAbstractItemView {
-            font-size: 16px;
+            font-size: 20px;
             background-color: white;
             color: #2c3e50;
             selection-background-color: #3498db;
@@ -77,7 +75,7 @@ if __name__ == "__main__":
 
         /* Optional: Text Inputs */
         QLineEdit {
-            font-size: 16px;
+            font-size: 20px;
             padding: 10px;
             border: 1px solid #e0e4e8;
             border-radius: 6px;

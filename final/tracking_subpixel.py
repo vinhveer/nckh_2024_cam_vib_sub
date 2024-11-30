@@ -290,7 +290,7 @@ class BaslerCameraROITracker(QMainWindow):
             self.camera.Width.Value = 600  # Đặt chiều rộng hình ảnh
             self.camera.Height.Value = 600  # Đặt chiều cao hình ảnh
 
-            # self.camera.ExposureTime.SetValue(20000)  # Đặt thời gian mở
+            self.camera.ExposureTime.SetValue(20000)  # Đặt thời gian mở
 
             # Đặt tốc độ khung hình
             self.camera.AcquisitionFrameRateEnable.Value = True
