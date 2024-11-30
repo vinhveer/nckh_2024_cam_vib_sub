@@ -120,13 +120,28 @@ class BaslerCameraROITracker(QMainWindow):
             grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
             if grabResult.GrabSucceeded():
                 first_image = grabResult.Array
-                roi = cv2.selectROI("Select ROI", first_image)
+                
+                # Create a window with size scaled to half of the original image
+                h, w = first_image.shape[:2]
+                scaled_w, scaled_h = w // 2, h // 2
+                
+                # Resize the image for display
+                scaled_image = cv2.resize(first_image, (scaled_w, scaled_h))
+                
+                # Select ROI on the scaled image
+                roi = cv2.selectROI("Select ROI", scaled_image)
                 cv2.destroyAllWindows()
 
+                # Adjust ROI coordinates to match original image scale
                 x, y, w, h = roi
-                if w > 0 and h > 0:
-                    self.template = first_image[int(y):int(y+h), int(x):int(x+w)]
-                    self.roi_rect = (x, y, x + w, y + h)
+                original_x = int(x * 2)
+                original_y = int(y * 2)
+                original_w = int(w * 2)
+                original_h = int(h * 2)
+
+                if original_w > 0 and original_h > 0:
+                    self.template = first_image[original_y:original_y+original_h, original_x:original_x+original_w]
+                    self.roi_rect = (original_x, original_y, original_x + original_w, original_y + original_h)
                     QMessageBox.information(self, "ROI Selected", f"ROI: {self.roi_rect}")
                 else:
                     QMessageBox.warning(self, "Error", "Invalid ROI selection")
