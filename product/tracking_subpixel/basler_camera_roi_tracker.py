@@ -2,15 +2,15 @@ import sys
 import cv2
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QPushButton, 
-                             QMessageBox, QVBoxLayout, QHBoxLayout, QWidget, QDialog, QComboBox, QDialogButtonBox)
+                             QMessageBox, QVBoxLayout, QHBoxLayout, QWidget, QDialog, 
+                             QDialogButtonBox, QFormLayout, QLineEdit, QSlider)
 from PyQt5.QtGui import QPixmap, QImage
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from pypylon import pylon
 import matplotlib.pyplot as plt
 
 from camera_selection_dialog import CameraSelectionDialog
 from enhanced_roi_tracker import EnhancedROITracker
-
 
 class BaslerCameraROITracker(QMainWindow):
     def __init__(self):
@@ -19,7 +19,7 @@ class BaslerCameraROITracker(QMainWindow):
         self.frame_count = 0
         self.setWindowTitle("Tracking ROI")
         
-        # Camera selection dialog
+        # Hộp thoại chọn camera
         camera_dialog = CameraSelectionDialog(self)
         if camera_dialog.exec_() == QDialog.Accepted:
             selected_serial = camera_dialog.get_selected_camera_serial()
@@ -27,13 +27,12 @@ class BaslerCameraROITracker(QMainWindow):
             QMessageBox.critical(self, "Error", "No camera selected. Exiting.")
             sys.exit(1)
 
-        # Initialize camera with selected serial number
+        # Khởi tạo camera với số serial đã chọn
         try:
-            # Tạo đối tượng camera với serial number đã chọn
             tlFactory = pylon.TlFactory.GetInstance()
             devices = tlFactory.EnumerateDevices()
             
-            # Tìm camera với serial number phù hợp
+            # Tìm camera với số serial khớp
             selected_device = None
             for device in devices:
                 if device.GetSerialNumber() == selected_serial:
@@ -43,15 +42,22 @@ class BaslerCameraROITracker(QMainWindow):
             if selected_device is None:
                 raise RuntimeError("Selected camera not found")
 
-            # Mở camera được chọn
+            # Mở camera đã chọn
             self.camera = pylon.InstantCamera(tlFactory.CreateDevice(selected_device))
             self.camera.Open()
 
-            # Cài đặt thông số camera
-            self.camera.Width.Value = 600  # Đặt chiều rộng hình ảnh
-            self.camera.Height.Value = 600  # Đặt chiều cao hình ảnh
+            # Đặt các tham số cố định cho camera
+            self.camera.Width.Value = 2048
+            self.camera.Height.Value = 2048
 
-            self.camera.ExposureTime.SetValue(20000)  # Đặt thời gian mở
+            # Lấy giới hạn thời gian phơi sáng
+            self.min_exposure = self.camera.ExposureTime.GetMin()
+            self.max_exposure = 49000  # Thời gian phơi sáng tối đa tùy chỉnh theo yêu cầu
+
+            self.current_exposure = 10000  # Thời gian phơi sáng mặc định
+
+            # Đặt thời gian phơi sáng ban đầu
+            self.camera.ExposureTime.SetValue(self.current_exposure)
 
             # Đặt tốc độ khung hình
             self.camera.AcquisitionFrameRateEnable.Value = True
@@ -65,46 +71,150 @@ class BaslerCameraROITracker(QMainWindow):
         self.template = None
         self.roi_rect = None
         self.is_tracking = False
+        self.current_frame = None
 
-        # Layout
+        # Bố cục
         central_widget = QWidget()
         layout = QVBoxLayout(central_widget)
         self.setCentralWidget(central_widget)
 
-        # Thêm nhãn hiển thị số khung hình
+        # Điều khiển thời gian phơi sáng
+        exposure_layout = QHBoxLayout()
+        self.exposure_label = QLabel(f"Exposure Time: {self.current_exposure}")
+        exposure_layout.addWidget(self.exposure_label)
+
+        # Tạo thanh trượt với phạm vi phơi sáng thực tế của camera
+        self.exposure_slider = QSlider(Qt.Horizontal)
+        self.exposure_slider.setMinimum(0)
+        self.exposure_slider.setMaximum(1000)  # Chúng ta sẽ ánh xạ điều này tới phạm vi thực tế của camera
+        self.exposure_slider.setValue(self.get_slider_value(self.current_exposure))
+        self.exposure_slider.valueChanged.connect(self.update_exposure_time)
+        exposure_layout.addWidget(self.exposure_slider)
+
+        layout.addLayout(exposure_layout)
+
+        # Nhãn đếm khung hình
         self.frame_count_label = QLabel("Frames: 0")
         layout.addWidget(self.frame_count_label)
 
-        # FPS display
+        # Hiển thị FPS
         self.label_fps = QLabel("FPS: 0")
         layout.addWidget(self.label_fps)
 
-        # Tracking result display
-        self.tracked_result = QLabel("Tracked ROI")
-        layout.addWidget(self.tracked_result)
-
-        # Tracking result display
-        self.label_tracked = QLabel("Tracked ROI")
+        # Hiển thị kết quả theo dõi với chế độ xem trực tiếp
+        self.label_tracked = QLabel("Live Camera View")
         self.label_tracked.setMinimumSize(800, 600)
         self.label_tracked.setAlignment(Qt.AlignCenter)
         self.label_tracked.setStyleSheet("border: 2px solid red;")
         layout.addWidget(self.label_tracked)
 
-        # Button layout
+        # Bố cục nút
         button_layout = QHBoxLayout()
         layout.addLayout(button_layout)
 
-        self.capture_first_image_button = QPushButton("Select ROI")
-        self.start_tracking_button = QPushButton("Start Tracking")
-        self.stop_tracking_button = QPushButton("Stop Tracking")
+        # Nút mới để chọn ROI trong chế độ xem trực tiếp
+        self.select_roi_button = QPushButton("Select ROI")
+        self.select_roi_button.clicked.connect(self.select_roi_during_live_view)
+        button_layout.addWidget(self.select_roi_button)
 
-        button_layout.addWidget(self.capture_first_image_button)
+        self.start_tracking_button = QPushButton("Start Tracking")
+        self.start_tracking_button.clicked.connect(self.start_tracking)
         button_layout.addWidget(self.start_tracking_button)
+
+        self.stop_tracking_button = QPushButton("Stop Tracking")
+        self.stop_tracking_button.clicked.connect(self.stop_tracking)
         button_layout.addWidget(self.stop_tracking_button)
 
-        self.capture_first_image_button.clicked.connect(self.capture_and_select_roi)
-        self.start_tracking_button.clicked.connect(self.start_tracking)
-        self.stop_tracking_button.clicked.connect(self.stop_tracking)
+        # Bộ đếm thời gian để chụp khung hình liên tục
+        self.frame_timer = QTimer(self)
+        self.frame_timer.timeout.connect(self.capture_continuous_frame)
+        self.frame_timer.start(33)  # Khoảng 30 FPS
+
+    def get_slider_value(self, exposure_time):
+        # Chuyển đổi thời gian phơi sáng thành giá trị thanh trượt (0-1000)
+        # Ánh xạ tuyến tính từ khoảng thời gian phơi sáng sang khoảng giá trị thanh trượt
+        return int(((exposure_time - self.min_exposure) / 
+                    (self.max_exposure - self.min_exposure)) * 1000)
+
+    def get_exposure_from_slider(self, slider_value):
+        # Chuyển đổi giá trị thanh trượt thành thời gian phơi sáng thực tế
+        # Ánh xạ tuyến tính từ khoảng giá trị thanh trượt sang khoảng thời gian phơi sáng
+        return self.min_exposure + (slider_value / 1000) * (self.max_exposure - self.min_exposure)
+
+    def update_exposure_time(self, slider_value):
+        try:
+            # Chuyển đổi giá trị thanh trượt thành thời gian phơi sáng thực tế
+            exposure_time = self.get_exposure_from_slider(slider_value)
+            
+            # Thiết lập thời gian phơi sáng
+            self.camera.ExposureTime.SetValue(exposure_time)
+            
+            # Cập nhật nhãn hiển thị
+            self.exposure_label.setText(f"Exposure Time: {exposure_time:.2f}")
+            
+            # Lưu lại thời gian phơi sáng hiện tại
+            self.current_exposure = exposure_time
+
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi thời gian phơi sáng", str(e))
+
+    def select_roi_during_live_view(self):
+        if self.current_frame is None:
+            QMessageBox.warning(self, "Lỗi", "Chưa có khung hình nào được chụp")
+            return
+
+        try:
+            # Sử dụng hình ảnh gốc và giảm kích thước để hiển thị
+            raw_frame = self.current_frame
+            h, w = raw_frame.shape[:2]
+            scaled_w, scaled_h = w // 2, h // 2
+            
+            # Thay đổi kích thước hình ảnh gốc
+            scaled_image = cv2.resize(raw_frame, (scaled_w, scaled_h))
+
+            # Hiển thị cửa sổ để chọn ROI
+            cv2.imshow("Select ROI", scaled_image)
+
+            # Chờ người dùng chọn ROI
+            roi = cv2.selectROI("Select ROI", scaled_image, showCrosshair=True, fromCenter=False)
+
+            # Đóng cửa sổ hiển thị
+            cv2.destroyWindow("Select ROI")
+
+            # Chuyển đổi toạ độ ROI về kích thước gốc
+            x, y, w, h = roi
+            original_x = int(x * 2)
+            original_y = int(y * 2)
+            original_w = int(w * 2)
+            original_h = int(h * 2)
+
+            if original_w > 0 and original_h > 0:
+                # Cắt vùng template từ hình ảnh gốc
+                self.template = self.current_frame[original_y:original_y+original_h, original_x:original_x+original_w]
+                self.roi_rect = (original_x, original_y, original_x + original_w, original_y + original_h)
+                QMessageBox.information(self, "ROI đã chọn", f"ROI: {self.roi_rect}")
+            else:
+                QMessageBox.warning(self, "Lỗi", "Chọn ROI không hợp lệ")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", str(e))
+
+    def capture_continuous_frame(self):
+        try:
+            grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+            if grabResult.GrabSucceeded():
+                self.current_frame = grabResult.Array
+                
+                # Hiển thị khung hình
+                if len(self.current_frame.shape) == 2:
+                    self.current_frame = cv2.cvtColor(self.current_frame, cv2.COLOR_GRAY2BGR)
+                
+                self.display_image(self.current_frame)
+
+                # Cập nhật FPS
+                resulting_fps = round(self.camera.ResultingFrameRate.Value, 8)
+                self.label_fps.setText(f"FPS: {resulting_fps:.8f}")
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi chụp khung hình", str(e))
 
     def display_image(self, image):
         if image is not None:
@@ -115,75 +225,20 @@ class BaslerCameraROITracker(QMainWindow):
             pixmap = QPixmap.fromImage(q_image)
             self.label_tracked.setPixmap(pixmap.scaled(self.label_tracked.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    def capture_and_select_roi(self):
-        try:
-            grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-            if grabResult.GrabSucceeded():
-                first_image = grabResult.Array
-                
-                # Create a window with size scaled to half of the original image
-                h, w = first_image.shape[:2]
-                scaled_w, scaled_h = w // 2, h // 2
-                
-                # Resize the image for display
-                scaled_image = cv2.resize(first_image, (scaled_w, scaled_h))
-                
-                # Select ROI on the scaled image
-                roi = cv2.selectROI("Select ROI", scaled_image)
-                cv2.destroyAllWindows()
-
-                # Adjust ROI coordinates to match original image scale
-                x, y, w, h = roi
-                original_x = int(x * 2)
-                original_y = int(y * 2)
-                original_w = int(w * 2)
-                original_h = int(h * 2)
-
-                if original_w > 0 and original_h > 0:
-                    self.template = first_image[original_y:original_y+original_h, original_x:original_x+original_w]
-                    self.roi_rect = (original_x, original_y, original_x + original_w, original_y + original_h)
-                    QMessageBox.information(self, "ROI Selected", f"ROI: {self.roi_rect}")
-                else:
-                    QMessageBox.warning(self, "Error", "Invalid ROI selection")
-            else:
-                QMessageBox.warning(self, "Capture Error", "Failed to capture image")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-
     def start_tracking(self):
-        # Kiểm tra điều kiện ban đầu
+        # Initial condition check
         if self.template is None:
-            QMessageBox.warning(self, "Error", "Please capture and select ROI first")
+            QMessageBox.warning(self, "Error", "Please select ROI first")
             return
 
-        # Tạo dialog chọn method
-        dialog = QDialog(self)
-        dialog.setGeometry(200, 200, 300, 100)
-        dialog.setWindowTitle("Select Tracking Method")
+        # Stop continuous frame capture
+        self.frame_timer.stop()
         
-        # Dropdown chọn method
-        method_selector = QComboBox(dialog)
-        method_selector.addItems(["auto", "feature_match", "template_match"])
-        
-        # Nút OK
-        ok_button = QPushButton("OK", dialog)
-        ok_button.clicked.connect(dialog.accept)
-        
-        # Layout cho dialog
-        layout = QVBoxLayout()
-        layout.addWidget(method_selector)
-        layout.addWidget(ok_button)
-        dialog.setLayout(layout)
+        # Tracking mode
+        self.is_tracking = True
+        self.track()
 
-        # Hiển thị dialog
-        if dialog.exec_() == QDialog.Accepted:
-            selected_method = method_selector.currentText()  # Lấy method được chọn
-            self.is_tracking = True
-            self.track(method=selected_method)  # Gọi hàm track với phương pháp đã chọn
-        else:
-            QMessageBox.information(self, "Info", "Tracking cancelled")
-
-    def track(self, method="auto"):
+    def track(self):
         prev_x, prev_y = None, None
 
         while self.is_tracking:
@@ -195,7 +250,7 @@ class BaslerCameraROITracker(QMainWindow):
                     center_x = round(float(x1 + x2) / 2, 8)
                     center_y = round(float(y1 + y2) / 2, 8)
 
-                    result = EnhancedROITracker.multi_method_tracking(current_frame, self.template, center_x, center_y, initial_search_area=100, method=method)
+                    result = EnhancedROITracker.template_match(current_frame, self.template, center_x, center_y, initial_search_area=100)
 
                     if result:
                         found_x, found_y, confidence = result
@@ -219,8 +274,6 @@ class BaslerCameraROITracker(QMainWindow):
                         if len(current_frame.shape) == 2:
                             current_frame = cv2.cvtColor(current_frame, cv2.COLOR_GRAY2BGR)
 
-                        self.tracked_result.setText(f"Tracked ROI: x = {found_x:.8f}, y = {found_y:.8f}, Confidence = {confidence:.8f}")
-                        
                         cv2.rectangle(current_frame, (int(new_x1), int(new_y1)), (int(new_x2), int(new_y2)), (0, 255, 0), 2)
                         self.display_image(current_frame)
 
@@ -241,6 +294,10 @@ class BaslerCameraROITracker(QMainWindow):
 
     def stop_tracking(self):
         self.is_tracking = False
+        
+        # Restart continuous frame capture
+        self.frame_timer.start(33)
+        
         self.show_plot()
 
     def show_plot(self):
@@ -249,56 +306,33 @@ class BaslerCameraROITracker(QMainWindow):
             return
         
         # Extract data
-        x_coords = [data[0] for data in self.tracking_data]
-        y_coords = [data[1] for data in self.tracking_data]
-        confidence = [data[2] for data in self.tracking_data]
         dx_data = [data[3] for data in self.tracking_data]
         dy_data = [data[4] for data in self.tracking_data]
         
         # Sampling frequency (assumed)
         Fs = 240  # Hz
-        N = len(confidence)  # Number of data points
+        N = len(dx_data)  # Number of data points
         t = np.linspace(0, N/Fs, N)  # Create time vector
         
-        # Create figure with 2x2 grid
-        fig, axs = plt.subplots(2, 2, figsize=(12, 10))
+        # Create figure with 2 subplots
+        fig, axs = plt.subplots(1, 2, figsize=(12, 5))
         
-        # Trajectory plot (top left)
-        axs[0, 0].plot(x_coords, y_coords, marker='o', label="Trajectory")
-        axs[0, 0].set_title("ROI Trajectory")
-        axs[0, 0].set_xlabel("X")
-        axs[0, 0].set_ylabel("Y")
-        axs[0, 0].grid()
-        axs[0, 0].legend()
+        # dx plot (left)
+        axs[0].plot(dx_data, label="dx", color='blue')
+        axs[0].set_title("dx vs Time")
+        axs[0].set_xlabel("Frame")
+        axs[0].set_ylabel("dx")
+        axs[0].grid()
+        axs[0].legend()
         
-        # Confidence plot (top right)
-        axs[0, 1].plot(t, confidence, label="Confidence", color='orange')
-        axs[0, 1].set_title("Confidence vs Time")
-        axs[0, 1].set_xlabel("Time (s)")
-        axs[0, 1].set_ylabel("Confidence")
-        axs[0, 1].grid()
-        axs[0, 1].legend()
-        
-        # dx plot (bottom left)
-        axs[1, 0].plot(dx_data, label="dx", color='blue')
-        axs[1, 0].set_title("dx vs Time")
-        axs[1, 0].set_xlabel("Frame")
-        axs[1, 0].set_ylabel("dx")
-        axs[1, 0].grid()
-        axs[1, 0].legend()
-        
-        # dy plot (bottom right)
-        axs[1, 1].plot(dy_data, label="dy", color='red')
-        axs[1, 1].set_title("dy vs Time")
-        axs[1, 1].set_xlabel("Frame")
-        axs[1, 1].set_ylabel("dy")
-        axs[1, 1].grid()
-        axs[1, 1].legend()
+        # dy plot (right)
+        axs[1].plot(dy_data, label="dy", color='red')
+        axs[1].set_title("dy vs Time")
+        axs[1].set_xlabel("Frame")
+        axs[1].set_ylabel("dy")
+        axs[1].grid()
+        axs[1].legend()
         
         # Adjust spacing between subplots
-        plt.tight_layout()
-        plt.show()
-
-        # Điều chỉnh khoảng cách giữa các subplots
         plt.tight_layout()
         plt.show()
