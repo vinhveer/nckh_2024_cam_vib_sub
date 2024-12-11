@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QPushButton, 
                              QMessageBox, QVBoxLayout, QHBoxLayout, QWidget, QDialog, 
-                             QDialogButtonBox, QFormLayout, QLineEdit, QSlider)
+                             QDialogButtonBox, QFormLayout, QLineEdit, QSlider, QSpinBox)
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt, QTimer
 from pypylon import pylon
@@ -129,6 +129,197 @@ class BaslerCameraROITracker(QMainWindow):
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self.capture_continuous_frame)
         self.frame_timer.start(33)  # Khoảng 30 FPS
+
+        self.adjust_roi_button = QPushButton("Adjust Camera ROI")
+        self.adjust_roi_button.clicked.connect(self.adjust_camera_roi)
+        button_layout.addWidget(self.adjust_roi_button)
+
+        # Store original full sensor dimensions
+        self.full_width = 2048
+        self.full_height = 2048
+        self.current_roi = None  # Will store current ROI coordinates
+
+    def adjust_camera_roi(self):
+        """
+        Chọn ROI với chẩn đoán chi tiết và xử lý căn chỉnh động
+        """
+        # Dừng timer để tránh việc liên tục chụp khung hình
+        self.frame_timer.stop()
+
+        try:
+            # Kiểm tra kết nối camera
+            if not self.camera.IsOpen():
+                QMessageBox.critical(self, "Lỗi", "Camera không được mở")
+                return
+
+            # Khởi tạo thông điệp chẩn đoán
+            diagnostic_msg = "Thông tin điều chỉnh ROI:\n"
+            
+            # Lấy các tham số căn chỉnh của camera
+            try:
+                # Lấy thông số căn chỉnh (increment) cho Width và Height
+                width_inc = getattr(self.camera.Width, 'Inc', 8)
+                height_inc = getattr(self.camera.Height, 'Inc', 8)
+                offset_x_inc = getattr(self.camera.OffsetX, 'Inc', 8)
+                offset_y_inc = getattr(self.camera.OffsetY, 'Inc', 8)
+
+                # Giá trị Min và Max
+                min_width = getattr(self.camera.Width, 'Min', 64)
+                max_width = getattr(self.camera.Width, 'Max', 2048)
+                min_height = getattr(self.camera.Height, 'Min', 64)
+                max_height = getattr(self.camera.Height, 'Max', 2048)
+                min_offset_x = getattr(self.camera.OffsetX, 'Min', 0)
+                max_offset_x = getattr(self.camera.OffsetX, 'Max', 2048)
+                min_offset_y = getattr(self.camera.OffsetY, 'Min', 0)
+                max_offset_y = getattr(self.camera.OffsetY, 'Max', 2048)
+
+            except Exception as attr_error:
+                diagnostic_msg += f"Không thể truy xuất thuộc tính: {attr_error}\n"
+                width_inc = height_inc = offset_x_inc = offset_y_inc = 8
+                min_width = min_height = 64
+                max_width = max_height = 2048
+                min_offset_x = min_offset_y = 0
+                max_offset_x = max_offset_y = 2048
+
+            # Dừng grabbing nếu đang chạy
+            if self.camera.IsGrabbing():
+                self.camera.StopGrabbing()
+
+            # Chụp khung hình với timeout dài hơn
+            try:
+                grab_result = self.camera.GrabOne(10000)  # Tăng timeout
+            except Exception as grab_error:
+                QMessageBox.critical(self, "Lỗi Chụp Khung Hình", f"Không thể chụp khung hình: {grab_error}")
+                self.frame_timer.start(33)
+                return
+
+            # Kiểm tra grab result
+            if grab_result is None or not grab_result.GrabSucceeded():
+                QMessageBox.critical(self, "Lỗi", "Không thể chụp khung hình hoặc kết quả rỗng")
+                self.frame_timer.start(33)
+                return
+
+            # Chuyển đổi khung hình
+            try:
+                current_frame = grab_result.Array
+            except Exception as array_error:
+                QMessageBox.critical(self, "Lỗi", f"Không thể truy cập mảng hình ảnh: {array_error}")
+                self.frame_timer.start(33)
+                return
+
+            # Kiểm tra khung hình
+            if current_frame is None or current_frame.size == 0:
+                QMessageBox.critical(self, "Lỗi", "Không có dữ liệu khung hình")
+                self.frame_timer.start(33)
+                return
+
+            # Lấy kích thước khung hình
+            h, w = current_frame.shape[:2]
+            scaled_w, scaled_h = w // 2, h // 2
+            
+            # Thay đổi kích thước hình ảnh
+            scaled_image = cv2.resize(current_frame, (scaled_w, scaled_h))
+
+            # Chuyển đổi sang màu nếu cần
+            if len(scaled_image.shape) == 2:
+                scaled_image = cv2.cvtColor(scaled_image, cv2.COLOR_GRAY2BGR)
+
+            # Hiển thị cửa sổ để chọn ROI
+            cv2.imshow("Chọn ROI cho Camera", scaled_image)
+
+            # Chờ người dùng chọn ROI
+            roi = cv2.selectROI("Chọn ROI cho Camera", scaled_image, showCrosshair=True, fromCenter=False)
+
+            # Đóng cửa sổ hiển thị
+            cv2.destroyWindow("Chọn ROI cho Camera")
+
+            # Chuyển đổi toạ độ ROI về kích thước gốc
+            x, y, width, height = roi
+            original_x = int(x * 2)
+            original_y = int(y * 2)
+            original_w = int(width * 2)
+            original_h = int(height * 2)
+
+            # Điều chỉnh để phù hợp với các ràng buộc của camera
+            # Căn chỉnh Width
+            original_w = max(min_width, min(original_w, max_width))
+            original_w = min_width + ((original_w - min_width) // width_inc * width_inc)
+
+            # Căn chỉnh Height
+            original_h = max(min_height, min(original_h, max_height))
+            original_h = min_height + ((original_h - min_height) // height_inc * height_inc)
+
+            # Căn chỉnh OffsetX
+            original_x = max(min_offset_x, min(original_x, max_offset_x - original_w))
+            original_x = min_offset_x + ((original_x - min_offset_x) // offset_x_inc * offset_x_inc)
+
+            # Căn chỉnh OffsetY
+            original_y = max(min_offset_y, min(original_y, max_offset_y - original_h))
+            original_y = min_offset_y + ((original_y - min_offset_y) // offset_y_inc * offset_y_inc)
+
+            # Kiểm tra ROI cuối cùng
+            if original_w <= 0 or original_h <= 0:
+                QMessageBox.warning(self, "Lỗi", "Chọn ROI không hợp lệ")
+                self.frame_timer.start(33)
+                return
+
+            # Thiết lập ROI mới
+            try:
+                # Đặt từng giá trị một cách an toàn
+                if hasattr(self.camera, 'OffsetX'):
+                    self.camera.OffsetX.Value = original_x
+                if hasattr(self.camera, 'OffsetY'):
+                    self.camera.OffsetY.Value = original_y
+                if hasattr(self.camera, 'Width'):
+                    self.camera.Width.Value = original_w
+                if hasattr(self.camera, 'Height'):
+                    self.camera.Height.Value = original_h
+
+                # Khởi động lại quá trình chụp
+                self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
+                # Khởi động lại timer
+                self.frame_timer.start(33)
+
+                # Thông báo ROI mới
+                QMessageBox.information(self, "Cập Nhật ROI", 
+                    f"ROI mới: X:{original_x}, Y:{original_y}, Rộng:{original_w}, Cao:{original_h}\n"
+                    "Camera sẽ chụp trong vùng này.")
+
+            except Exception as roi_error:
+                diagnostic_msg += f"\nLỗi khi điều chỉnh ROI: {roi_error}"
+                QMessageBox.warning(self, "Lỗi Điều Chỉnh ROI", diagnostic_msg)
+                self.frame_timer.start(33)
+
+        except Exception as general_error:
+            QMessageBox.critical(self, "Lỗi Chung", str(general_error))
+            self.frame_timer.start(33)
+
+    def reset_camera_roi(self):
+        """
+        Reset camera to full sensor dimensions
+        """
+        try:
+            # Stop current acquisition
+            if self.camera.IsGrabbing():
+                self.camera.StopGrabbing()
+
+            # Reset to full sensor dimensions
+            self.camera.OffsetX.Value = 0
+            self.camera.OffsetY.Value = 0
+            self.camera.Width.Value = self.full_width
+            self.camera.Height.Value = self.full_height
+
+            # Clear stored ROI
+            self.current_roi = None
+
+            # Restart grabbing
+            self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
+            QMessageBox.information(self, "ROI Reset", "Camera reset to full sensor dimensions.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "ROI Reset Error", str(e))
 
     def get_slider_value(self, exposure_time):
         # Chuyển đổi thời gian phơi sáng thành giá trị thanh trượt (0-1000)
@@ -300,39 +491,77 @@ class BaslerCameraROITracker(QMainWindow):
         
         self.show_plot()
 
+    # def show_plot(self):
+    #     if not self.tracking_data:
+    #         QMessageBox.information(self, "No Data", "No tracking data to display.")
+    #         return
+        
+    #     # Extract data
+    #     dx_data = [data[3] for data in self.tracking_data]
+    #     dy_data = [data[4] for data in self.tracking_data]
+        
+    #     # Sampling frequency (assumed)
+    #     Fs = 240  # Hz
+    #     N = len(dx_data)  # Number of data points
+    #     t = np.linspace(0, N/Fs, N)  # Create time vector
+        
+    #     # Create figure with 2 subplots
+    #     fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+        
+    #     # dx plot (left)
+    #     axs[0].plot(dx_data, label="dx", color='blue')
+    #     axs[0].set_title("dx vs Time")
+    #     axs[0].set_xlabel("Frame")
+    #     axs[0].set_ylabel("dx")
+    #     axs[0].grid()
+    #     axs[0].legend()
+        
+    #     # dy plot (right)
+    #     axs[1].plot(dy_data, label="dy", color='red')
+    #     axs[1].set_title("dy vs Time")
+    #     axs[1].set_xlabel("Frame")
+    #     axs[1].set_ylabel("dy")
+    #     axs[1].grid()
+    #     axs[1].legend()
+        
+    #     # Adjust spacing between subplots
+    #     plt.tight_layout()
+    #     plt.show()
+
     def show_plot(self):
         if not self.tracking_data:
             QMessageBox.information(self, "No Data", "No tracking data to display.")
             return
         
-        # Extract data
-        dx_data = [data[3] for data in self.tracking_data]
-        dy_data = [data[4] for data in self.tracking_data]
+        # Chuẩn bị dữ liệu cho từng phương pháp
+        methods = ['Gaussian', 'Quadratic', 'Interpolation']
         
-        # Sampling frequency (assumed)
-        Fs = 240  # Hz
-        N = len(dx_data)  # Number of data points
-        t = np.linspace(0, N/Fs, N)  # Create time vector
+        # Tạo figure 6 subplots
+        fig, axs = plt.subplots(2, 3, figsize=(18, 10))
+        fig.suptitle('Sub-Pixel Refinement Methods Comparison', fontsize=16)
         
-        # Create figure with 2 subplots
-        fig, axs = plt.subplots(1, 2, figsize=(12, 5))
+        # Lặp qua từng phương pháp và vẽ đồ thị dx, dy
+        for i, method in enumerate(methods):
+            # Lấy dữ liệu dx và dy cho phương pháp hiện tại
+            dx_data = [data[3][method][0] for data in self.tracking_data]
+            dy_data = [data[3][method][1] for data in self.tracking_data]
+            
+            # dx plot
+            axs[0, i].plot(dx_data, label=f"{method} dx", color='blue')
+            axs[0, i].set_title(f"{method} dx vs Time")
+            axs[0, i].set_xlabel("Frame")
+            axs[0, i].set_ylabel("dx")
+            axs[0, i].grid()
+            axs[0, i].legend()
+            
+            # dy plot
+            axs[1, i].plot(dy_data, label=f"{method} dy", color='red')
+            axs[1, i].set_title(f"{method} dy vs Time")
+            axs[1, i].set_xlabel("Frame")
+            axs[1, i].set_ylabel("dy")
+            axs[1, i].grid()
+            axs[1, i].legend()
         
-        # dx plot (left)
-        axs[0].plot(dx_data, label="dx", color='blue')
-        axs[0].set_title("dx vs Time")
-        axs[0].set_xlabel("Frame")
-        axs[0].set_ylabel("dx")
-        axs[0].grid()
-        axs[0].legend()
-        
-        # dy plot (right)
-        axs[1].plot(dy_data, label="dy", color='red')
-        axs[1].set_title("dy vs Time")
-        axs[1].set_xlabel("Frame")
-        axs[1].set_ylabel("dy")
-        axs[1].grid()
-        axs[1].legend()
-        
-        # Adjust spacing between subplots
+        # Điều chỉnh khoảng cách giữa các subplot
         plt.tight_layout()
         plt.show()
