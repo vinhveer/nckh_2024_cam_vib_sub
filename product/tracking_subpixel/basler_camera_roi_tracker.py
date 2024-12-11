@@ -18,6 +18,10 @@ class BaslerCameraROITracker(QMainWindow):
         self.tracking_data = []
         self.frame_count = 0
         self.setWindowTitle("Tracking ROI")
+        # Modify these lines to support multiple templates and ROIs
+        self.templates = []  # List to store multiple templates
+        self.roi_rects = []  # List to store multiple ROI rectangles
+        self.tracking_data_list = []  # List to store tracking data for each template
         
         # Hộp thoại chọn camera
         camera_dialog = CameraSelectionDialog(self)
@@ -363,29 +367,38 @@ class BaslerCameraROITracker(QMainWindow):
             # Thay đổi kích thước hình ảnh gốc
             scaled_image = cv2.resize(raw_frame, (scaled_w, scaled_h))
 
-            # Hiển thị cửa sổ để chọn ROI
-            cv2.imshow("Select ROI", scaled_image)
+            # Thêm vòng lặp để chọn nhiều ROI
+            while True:
+                # Hiển thị cửa sổ để chọn ROI
+                cv2.imshow("Select ROI (ESC to finish)", scaled_image)
 
-            # Chờ người dùng chọn ROI
-            roi = cv2.selectROI("Select ROI", scaled_image, showCrosshair=True, fromCenter=False)
+                # Chờ người dùng chọn ROI
+                roi = cv2.selectROI("Select ROI (ESC to finish)", scaled_image, showCrosshair=True, fromCenter=False)
 
+                # Kiểm tra nếu người dùng nhấn ESC (roi == (0,0,0,0))
+                if roi[2] == 0 or roi[3] == 0:
+                    break
+
+                # Chuyển đổi toạ độ ROI về kích thước gốc
+                x, y, w, h = roi
+                original_x = int(x * 2)
+                original_y = int(y * 2)
+                original_w = int(w * 2)
+                original_h = int(h * 2)
+
+                if original_w > 0 and original_h > 0:
+                    # Cắt vùng template từ hình ảnh gốc
+                    template = self.current_frame[original_y:original_y+original_h, original_x:original_x+original_w]
+                    roi_rect = (original_x, original_y, original_x + original_w, original_y + original_h)
+                    
+                    # Thêm template và ROI vào danh sách
+                    self.templates.append(template)
+                    self.roi_rects.append(roi_rect)
+                
             # Đóng cửa sổ hiển thị
-            cv2.destroyWindow("Select ROI")
+            cv2.destroyAllWindows()
 
-            # Chuyển đổi toạ độ ROI về kích thước gốc
-            x, y, w, h = roi
-            original_x = int(x * 2)
-            original_y = int(y * 2)
-            original_w = int(w * 2)
-            original_h = int(h * 2)
-
-            if original_w > 0 and original_h > 0:
-                # Cắt vùng template từ hình ảnh gốc
-                self.template = self.current_frame[original_y:original_y+original_h, original_x:original_x+original_w]
-                self.roi_rect = (original_x, original_y, original_x + original_w, original_y + original_h)
-                QMessageBox.information(self, "ROI đã chọn", f"ROI: {self.roi_rect}")
-            else:
-                QMessageBox.warning(self, "Lỗi", "Chọn ROI không hợp lệ")
+            QMessageBox.information(self, "ROI đã chọn", f"Đã chọn {len(self.templates)} điểm tracking")
         except Exception as e:
             QMessageBox.critical(self, "Lỗi", str(e))
 
@@ -416,60 +429,145 @@ class BaslerCameraROITracker(QMainWindow):
             pixmap = QPixmap.fromImage(q_image)
             self.label_tracked.setPixmap(pixmap.scaled(self.label_tracked.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
+    # def start_tracking(self):
+    #     # Initial condition check
+    #     if self.template is None:
+    #         QMessageBox.warning(self, "Error", "Please select ROI first")
+    #         return
+
+    #     # Stop continuous frame capture
+    #     self.frame_timer.stop()
+        
+    #     # Tracking mode
+    #     self.is_tracking = True
+    #     self.track()
+
     def start_tracking(self):
         # Initial condition check
-        if self.template is None:
-            QMessageBox.warning(self, "Error", "Please select ROI first")
+        if not self.templates:
+            QMessageBox.warning(self, "Error", "Please select at least one ROI")
             return
 
         # Stop continuous frame capture
         self.frame_timer.stop()
         
+        # Reset tracking data for all templates
+        self.tracking_data_list = [[] for _ in self.templates]
+        
         # Tracking mode
         self.is_tracking = True
         self.track()
 
+    # def track(self):
+    #     prev_x, prev_y = None, None
+
+    #     while self.is_tracking:
+    #         try:
+    #             grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+    #             if grabResult.GrabSucceeded():
+    #                 current_frame = grabResult.Array
+    #                 x1, y1, x2, y2 = self.roi_rect
+    #                 center_x = round(float(x1 + x2) / 2, 8)
+    #                 center_y = round(float(y1 + y2) / 2, 8)
+
+    #                 result = EnhancedROITracker.template_match(current_frame, self.template, center_x, center_y, initial_search_area=100)
+
+    #                 if result:
+    #                     found_x, found_y, confidence = result
+    #                     w = x2 - x1
+    #                     h = y2 - y1
+    #                     new_x1 = round(found_x - w / 2, 8)
+    #                     new_y1 = round(found_y - h / 2, 8)
+    #                     new_x2 = round(new_x1 + w, 8)
+    #                     new_y2 = round(new_y1 + h, 8)
+    #                     self.roi_rect = (new_x1, new_y1, new_x2, new_y2)
+
+    #                     if prev_x is not None and prev_y is not None:
+    #                         dx = round(found_x - prev_x, 8)
+    #                         dy = round(found_y - prev_y, 8)
+    #                     else:
+    #                         dx = dy = 0.0
+
+    #                     self.tracking_data.append((found_x, found_y, confidence, dx, dy))
+    #                     prev_x, prev_y = found_x, found_y
+
+    #                     if len(current_frame.shape) == 2:
+    #                         current_frame = cv2.cvtColor(current_frame, cv2.COLOR_GRAY2BGR)
+
+    #                     cv2.rectangle(current_frame, (int(new_x1), int(new_y1)), (int(new_x2), int(new_y2)), (0, 255, 0), 2)
+    #                     self.display_image(current_frame)
+
+    #                     resulting_fps = round(self.camera.ResultingFrameRate.Value, 8)
+    #                     self.label_fps.setText(f"FPS: {resulting_fps:.8f}")
+
+    #                 self.frame_count += 1
+    #                 self.frame_count_label.setText(f"Frames: {self.frame_count}")
+
+    #                 QApplication.processEvents()
+    #             else:
+    #                 QMessageBox.warning(self, "Error", "Capture Error: Failed to grab image")
+    #                 self.stop_tracking()
+
+    #         except Exception as e:
+    #             QMessageBox.critical(self, "Error", str(e))
+    #             self.stop_tracking()
+
     def track(self):
-        prev_x, prev_y = None, None
+        # Danh sách để lưu trạng thái tracking của từng điểm
+        prev_points = [None] * len(self.templates)
 
         while self.is_tracking:
             try:
                 grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
                 if grabResult.GrabSucceeded():
                     current_frame = grabResult.Array
-                    x1, y1, x2, y2 = self.roi_rect
-                    center_x = round(float(x1 + x2) / 2, 8)
-                    center_y = round(float(y1 + y2) / 2, 8)
 
-                    result = EnhancedROITracker.template_match(current_frame, self.template, center_x, center_y, initial_search_area=100)
+                    # Chuyển đổi khung hình sang BGR nếu cần
+                    if len(current_frame.shape) == 2:
+                        current_frame = cv2.cvtColor(current_frame, cv2.COLOR_GRAY2BGR)
 
-                    if result:
-                        found_x, found_y, confidence = result
-                        w = x2 - x1
-                        h = y2 - y1
-                        new_x1 = round(found_x - w / 2, 8)
-                        new_y1 = round(found_y - h / 2, 8)
-                        new_x2 = round(new_x1 + w, 8)
-                        new_y2 = round(new_y1 + h, 8)
-                        self.roi_rect = (new_x1, new_y1, new_x2, new_y2)
+                    # Theo dõi từng điểm
+                    for idx, (template, roi_rect) in enumerate(zip(self.templates, self.roi_rects)):
+                        x1, y1, x2, y2 = roi_rect
+                        center_x = round(float(x1 + x2) / 2, 8)
+                        center_y = round(float(y1 + y2) / 2, 8)
 
-                        if prev_x is not None and prev_y is not None:
-                            dx = round(found_x - prev_x, 8)
-                            dy = round(found_y - prev_y, 8)
-                        else:
-                            dx = dy = 0.0
+                        result = EnhancedROITracker.template_match(current_frame, template, center_x, center_y, initial_search_area=100)
 
-                        self.tracking_data.append((found_x, found_y, confidence, dx, dy))
-                        prev_x, prev_y = found_x, found_y
+                        if result:
+                            found_x, found_y, confidence = result
+                            w = x2 - x1
+                            h = y2 - y1
+                            new_x1 = round(found_x - w / 2, 8)
+                            new_y1 = round(found_y - h / 2, 8)
+                            new_x2 = round(new_x1 + w, 8)
+                            new_y2 = round(new_y1 + h, 8)
+                            
+                            # Cập nhật lại ROI
+                            self.roi_rects[idx] = (new_x1, new_y1, new_x2, new_y2)
 
-                        if len(current_frame.shape) == 2:
-                            current_frame = cv2.cvtColor(current_frame, cv2.COLOR_GRAY2BGR)
+                            # Tính toán chuyển động
+                            prev_point = prev_points[idx]
+                            if prev_point is not None:
+                                dx = round(found_x - prev_point[0], 8)
+                                dy = round(found_y - prev_point[1], 8)
+                            else:
+                                dx = dy = 0.0
 
-                        cv2.rectangle(current_frame, (int(new_x1), int(new_y1)), (int(new_x2), int(new_y2)), (0, 255, 0), 2)
-                        self.display_image(current_frame)
+                            # Lưu dữ liệu tracking
+                            self.tracking_data_list[idx].append((found_x, found_y, confidence, dx, dy))
+                            prev_points[idx] = (found_x, found_y)
 
-                        resulting_fps = round(self.camera.ResultingFrameRate.Value, 8)
-                        self.label_fps.setText(f"FPS: {resulting_fps:.8f}")
+                            # Vẽ hình chữ nhật cho điểm tracking
+                            color = (0, 255, 0) if idx == 0 else (255, 0, 0)  # Xanh lá cho điểm đầu tiên, đỏ cho các điểm khác
+                            cv2.rectangle(current_frame, (int(new_x1), int(new_y1)), (int(new_x2), int(new_y2)), color, 2)
+
+                    # Hiển thị khung hình
+                    self.display_image(current_frame)
+
+                    # Cập nhật FPS
+                    resulting_fps = round(self.camera.ResultingFrameRate.Value, 8)
+                    self.label_fps.setText(f"FPS: {resulting_fps:.8f}")
 
                     self.frame_count += 1
                     self.frame_count_label.setText(f"Frames: {self.frame_count}")
@@ -490,6 +588,15 @@ class BaslerCameraROITracker(QMainWindow):
         self.frame_timer.start(33)
         
         self.show_plot()
+
+    def reset_tracking(self):
+        # Đặt lại danh sách templates, ROIs và tracking data
+        self.templates = []
+        self.roi_rects = []
+        self.tracking_data_list = []
+        self.frame_count = 0
+        self.frame_count_label.setText("Frames: 0")
+        QMessageBox.information(self, "Reset", "Tracking data and ROIs have been reset.")
 
     # def show_plot(self):
     #     if not self.tracking_data:
@@ -529,39 +636,44 @@ class BaslerCameraROITracker(QMainWindow):
     #     plt.show()
 
     def show_plot(self):
-        if not self.tracking_data:
+        if not self.tracking_data_list or all(len(data) == 0 for data in self.tracking_data_list):
             QMessageBox.information(self, "No Data", "No tracking data to display.")
             return
         
-        # Chuẩn bị dữ liệu cho từng phương pháp
-        methods = ['Gaussian', 'Quadratic', 'Interpolation']
-        
-        # Tạo figure 6 subplots
-        fig, axs = plt.subplots(2, 3, figsize=(18, 10))
-        fig.suptitle('Sub-Pixel Refinement Methods Comparison', fontsize=16)
-        
-        # Lặp qua từng phương pháp và vẽ đồ thị dx, dy
-        for i, method in enumerate(methods):
-            # Lấy dữ liệu dx và dy cho phương pháp hiện tại
-            dx_data = [data[3][method][0] for data in self.tracking_data]
-            dy_data = [data[3][method][1] for data in self.tracking_data]
+        # Sampling frequency (assumed)
+        Fs = 240  # Hz
+
+        # Create figure with subplots for each tracked point
+        num_templates = len(self.tracking_data_list)
+        fig, axs = plt.subplots(num_templates, 2, figsize=(15, 5*num_templates))
+
+        # Nếu chỉ có một điểm, axs sẽ là 1D, nên chúng ta phải điều chỉnh
+        if num_templates == 1:
+            axs = axs.reshape(1, -1)
+
+        for idx, tracking_data in enumerate(self.tracking_data_list):
+            dx_data = [data[3] for data in tracking_data]
+            dy_data = [data[4] for data in tracking_data]
+            
+            N = len(dx_data)
+            t = np.linspace(0, N/Fs, N)
             
             # dx plot
-            axs[0, i].plot(dx_data, label=f"{method} dx", color='blue')
-            axs[0, i].set_title(f"{method} dx vs Time")
-            axs[0, i].set_xlabel("Frame")
-            axs[0, i].set_ylabel("dx")
-            axs[0, i].grid()
-            axs[0, i].legend()
+            axs[idx, 0].plot(t, dx_data, label=f"dx Point {idx+1}", color='blue')
+            axs[idx, 0].set_title(f"dx vs Time - Point {idx+1}")
+            axs[idx, 0].set_xlabel("Time (s)")
+            axs[idx, 0].set_ylabel("dx")
+            axs[idx, 0].grid()
+            axs[idx, 0].legend()
             
             # dy plot
-            axs[1, i].plot(dy_data, label=f"{method} dy", color='red')
-            axs[1, i].set_title(f"{method} dy vs Time")
-            axs[1, i].set_xlabel("Frame")
-            axs[1, i].set_ylabel("dy")
-            axs[1, i].grid()
-            axs[1, i].legend()
+            axs[idx, 1].plot(t, dy_data, label=f"dy Point {idx+1}", color='red')
+            axs[idx, 1].set_title(f"dy vs Time - Point {idx+1}")
+            axs[idx, 1].set_xlabel("Time (s)")
+            axs[idx, 1].set_ylabel("dy")
+            axs[idx, 1].grid()
+            axs[idx, 1].legend()
         
-        # Điều chỉnh khoảng cách giữa các subplot
+        # Adjust spacing between subplots
         plt.tight_layout()
         plt.show()
