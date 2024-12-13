@@ -376,10 +376,9 @@ class BaslerCameraROITracker(QMainWindow):
                 # Chờ phím nhấn
                 key = cv2.waitKey(1) & 0xFF
 
-                # Nếu nhấn Enter, lấy tọa độ đầu tiên
+                # Nếu nhấn Enter, thêm tất cả QR được phát hiện
                 if key == 13:  # Phím Enter
-                    if decoded_objects:
-                        obj = decoded_objects[0]
+                    for obj in decoded_objects:
                         points = obj.polygon
                         if len(points) == 4:
                             pts = [(int(p.x), int(p.y)) for p in points]
@@ -393,7 +392,7 @@ class BaslerCameraROITracker(QMainWindow):
                             template = raw_frame[y_min:y_max, x_min:x_max]
                             self.templates.append(template)
                             self.roi_rects.append(roi_rect)
-                            break
+                    break
 
                 # Nếu nhấn ESC, thoát
                 elif key == 27:  # Phím ESC
