@@ -15,7 +15,7 @@ class QRCornerTracker:
         self.camera.Open()
         
         # Camera configuration
-        self.camera.ExposureTime.SetValue(20000.0)
+        self.camera.ExposureTime.SetValue(2000.0)
         self.camera.Width.SetValue(1000)
         self.camera.Height.SetValue(1000)
         self.camera.OffsetX.SetValue(711)
