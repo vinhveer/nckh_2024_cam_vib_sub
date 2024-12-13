@@ -338,6 +338,73 @@ class BaslerCameraROITracker(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Lỗi thời gian phơi sáng", str(e))
 
+    # def select_roi_during_live_view(self):
+    #     if self.current_frame is None:
+    #         QMessageBox.warning(self, "Lỗi", "Chưa có khung hình nào được chụp")
+    #         return
+
+    #     try:
+    #         raw_frame = self.current_frame
+    #         h, w = raw_frame.shape[:2]
+
+    #         # Hiển thị cửa sổ video live view
+    #         while True:
+    #             # Đọc khung hình hiện tại và hiển thị
+    #             display_frame = raw_frame.copy()
+    #             decoded_objects = decode(display_frame)
+
+    #             # Vẽ các bounding box QR trên khung hình
+    #             for obj in decoded_objects:
+    #                 points = obj.polygon
+    #                 if len(points) == 4:
+    #                     pts = [(int(p.x), int(p.y)) for p in points]
+    #                     for i in range(len(pts)):
+    #                         cv2.line(display_frame, pts[i], pts[(i + 1) % 4], (0, 255, 0), 2)
+
+    #                     # Tính bounding box từ polygon
+    #                     x_min = min(pt[0] for pt in pts)
+    #                     y_min = min(pt[1] for pt in pts)
+    #                     x_max = max(pt[0] for pt in pts)
+    #                     y_max = max(pt[1] for pt in pts)
+
+    #                     cv2.putText(display_frame, "QR Code", (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+    #                     cv2.rectangle(display_frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
+
+    #             # Hiển thị khung hình
+    #             cv2.imshow("Auto QR Tracking (Press Enter to confirm)", display_frame)
+
+    #             # Chờ phím nhấn
+    #             key = cv2.waitKey(1) & 0xFF
+
+    #             # Nếu nhấn Enter, thêm tất cả QR được phát hiện
+    #             if key == 13:  # Phím Enter
+    #                 for obj in decoded_objects:
+    #                     points = obj.polygon
+    #                     if len(points) == 4:
+    #                         pts = [(int(p.x), int(p.y)) for p in points]
+    #                         x_min = min(pt[0] for pt in pts)
+    #                         y_min = min(pt[1] for pt in pts)
+    #                         x_max = max(pt[0] for pt in pts)
+    #                         y_max = max(pt[1] for pt in pts)
+
+    #                         # Lưu tọa độ ROI
+    #                         roi_rect = (x_min, y_min, x_max, y_max)
+    #                         template = raw_frame[y_min:y_max, x_min:x_max]
+    #                         self.templates.append(template)
+    #                         self.roi_rects.append(roi_rect)
+    #                 break
+
+    #             # Nếu nhấn ESC, thoát
+    #             elif key == 27:  # Phím ESC
+    #                 break
+
+    #         # Đóng cửa sổ hiển thị
+    #         cv2.destroyAllWindows()
+
+    #         QMessageBox.information(self, "QR đã chọn", f"Đã chọn {len(self.templates)} điểm tracking")
+    #     except Exception as e:
+    #         QMessageBox.critical(self, "Lỗi", str(e))
+
     def select_roi_during_live_view(self):
         if self.current_frame is None:
             QMessageBox.warning(self, "Lỗi", "Chưa có khung hình nào được chụp")
@@ -370,8 +437,11 @@ class BaslerCameraROITracker(QMainWindow):
                         cv2.putText(display_frame, "QR Code", (x_min, y_min - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         cv2.rectangle(display_frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
 
+                # Thu nhỏ khung hình xuống 1/2 kích thước
+                resized_frame = cv2.resize(display_frame, (w // 2, h // 2))
+
                 # Hiển thị khung hình
-                cv2.imshow("Auto QR Tracking (Press Enter to confirm)", display_frame)
+                cv2.imshow("Auto QR Tracking (Press Enter to confirm)", resized_frame)
 
                 # Chờ phím nhấn
                 key = cv2.waitKey(1) & 0xFF
