@@ -145,7 +145,7 @@ class BaslerCameraROITracker(QMainWindow):
 
     def adjust_camera_roi(self):
         """
-        Chọn ROI với chẩn đoán chi tiết và xử lý căn chỉnh động
+        Chọn ROI với chẩn đoán chi tiết và điều chỉnh chính xác của camera
         """
         # Dừng timer để tránh việc liên tục chụp khung hình
         self.frame_timer.stop()
@@ -156,68 +156,37 @@ class BaslerCameraROITracker(QMainWindow):
                 QMessageBox.critical(self, "Lỗi", "Camera không được mở")
                 return
 
-            # Khởi tạo thông điệp chẩn đoán
+            # Kiểm tra và điều chỉnh thuộc tính ROI
             diagnostic_msg = "Thông tin điều chỉnh ROI:\n"
             
-            # Lấy các tham số căn chỉnh của camera
-            try:
-                # Lấy thông số căn chỉnh (increment) cho Width và Height
-                width_inc = getattr(self.camera.Width, 'Inc', 8)
-                height_inc = getattr(self.camera.Height, 'Inc', 8)
-                offset_x_inc = getattr(self.camera.OffsetX, 'Inc', 8)
-                offset_y_inc = getattr(self.camera.OffsetY, 'Inc', 8)
-
-                # Giá trị Min và Max
-                min_width = getattr(self.camera.Width, 'Min', 64)
-                max_width = getattr(self.camera.Width, 'Max', 2048)
-                min_height = getattr(self.camera.Height, 'Min', 64)
-                max_height = getattr(self.camera.Height, 'Max', 2048)
-                min_offset_x = getattr(self.camera.OffsetX, 'Min', 0)
-                max_offset_x = getattr(self.camera.OffsetX, 'Max', 2048)
-                min_offset_y = getattr(self.camera.OffsetY, 'Min', 0)
-                max_offset_y = getattr(self.camera.OffsetY, 'Max', 2048)
-
-            except Exception as attr_error:
-                diagnostic_msg += f"Không thể truy xuất thuộc tính: {attr_error}\n"
-                width_inc = height_inc = offset_x_inc = offset_y_inc = 8
-                min_width = min_height = 64
-                max_width = max_height = 2048
-                min_offset_x = min_offset_y = 0
-                max_offset_x = max_offset_y = 2048
+            # Lấy thông số giới hạn của camera
+            width_min = self.camera.Width.Min
+            width_max = self.camera.Width.Max
+            height_min = self.camera.Height.Min
+            height_max = self.camera.Height.Max
+            width_inc = self.camera.Width.Inc  # Increment value
+            height_inc = self.camera.Height.Inc  # Increment value
 
             # Dừng grabbing nếu đang chạy
             if self.camera.IsGrabbing():
                 self.camera.StopGrabbing()
 
-            # Chụp khung hình với timeout dài hơn
+            # Chụp khung hình an toàn
             try:
-                grab_result = self.camera.GrabOne(10000)  # Tăng timeout
+                grab_result = self.camera.GrabOne(5000)
             except Exception as grab_error:
-                QMessageBox.critical(self, "Lỗi Chụp Khung Hình", f"Không thể chụp khung hình: {grab_error}")
+                QMessageBox.critical(self, "Lỗi Chụp", f"Không thể chụp khung hình: {grab_error}")
                 self.frame_timer.start(33)
                 return
 
-            # Kiểm tra grab result
-            if grab_result is None or not grab_result.GrabSucceeded():
-                QMessageBox.critical(self, "Lỗi", "Không thể chụp khung hình hoặc kết quả rỗng")
-                self.frame_timer.start(33)
-                return
-
-            # Chuyển đổi khung hình
-            try:
-                current_frame = grab_result.Array
-            except Exception as array_error:
-                QMessageBox.critical(self, "Lỗi", f"Không thể truy cập mảng hình ảnh: {array_error}")
-                self.frame_timer.start(33)
-                return
-
-            # Kiểm tra khung hình
-            if current_frame is None or current_frame.size == 0:
+            # Kiểm tra kết quả chụp
+            if not grab_result.GrabSucceeded() or grab_result.Array is None:
                 QMessageBox.critical(self, "Lỗi", "Không có dữ liệu khung hình")
                 self.frame_timer.start(33)
                 return
 
-            # Lấy kích thước khung hình
+            # Chuyển đổi khung hình
+            current_frame = grab_result.Array
             h, w = current_frame.shape[:2]
             scaled_w, scaled_h = w // 2, h // 2
             
@@ -244,40 +213,31 @@ class BaslerCameraROITracker(QMainWindow):
             original_w = int(width * 2)
             original_h = int(height * 2)
 
-            # Điều chỉnh để phù hợp với các ràng buộc của camera
-            # Căn chỉnh Width
-            original_w = max(min_width, min(original_w, max_width))
-            original_w = min_width + ((original_w - min_width) // width_inc * width_inc)
-
-            # Căn chỉnh Height
-            original_h = max(min_height, min(original_h, max_height))
-            original_h = min_height + ((original_h - min_height) // height_inc * height_inc)
-
-            # Căn chỉnh OffsetX
-            original_x = max(min_offset_x, min(original_x, max_offset_x - original_w))
-            original_x = min_offset_x + ((original_x - min_offset_x) // offset_x_inc * offset_x_inc)
-
-            # Căn chỉnh OffsetY
-            original_y = max(min_offset_y, min(original_y, max_offset_y - original_h))
-            original_y = min_offset_y + ((original_y - min_offset_y) // offset_y_inc * offset_y_inc)
-
-            # Kiểm tra ROI cuối cùng
+            # Kiểm tra ROI hợp lệ
             if original_w <= 0 or original_h <= 0:
                 QMessageBox.warning(self, "Lỗi", "Chọn ROI không hợp lệ")
                 self.frame_timer.start(33)
                 return
 
-            # Thiết lập ROI mới
+            # Điều chỉnh theo từng thuộc tính với các ràng buộc
             try:
-                # Đặt từng giá trị một cách an toàn
-                if hasattr(self.camera, 'OffsetX'):
-                    self.camera.OffsetX.Value = original_x
-                if hasattr(self.camera, 'OffsetY'):
-                    self.camera.OffsetY.Value = original_y
-                if hasattr(self.camera, 'Width'):
-                    self.camera.Width.Value = original_w
-                if hasattr(self.camera, 'Height'):
-                    self.camera.Height.Value = original_h
+                # Điều chỉnh Width theo increment
+                original_w = max(width_min, min(original_w, width_max))
+                original_w = width_min + ((original_w - width_min) // width_inc) * width_inc
+
+                # Điều chỉnh Height theo increment
+                original_h = max(height_min, min(original_h, height_max))
+                original_h = height_min + ((original_h - height_min) // height_inc) * height_inc
+
+                # Điều chỉnh OffsetX và OffsetY
+                original_x = max(0, min(original_x, width_max - original_w))
+                original_y = max(0, min(original_y, height_max - original_h))
+
+                # Thiết lập ROI mới
+                self.camera.Width.Value = original_w
+                self.camera.Height.Value = original_h
+                self.camera.OffsetX.Value = original_x
+                self.camera.OffsetY.Value = original_y
 
                 # Khởi động lại quá trình chụp
                 self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
@@ -291,6 +251,7 @@ class BaslerCameraROITracker(QMainWindow):
                     "Camera sẽ chụp trong vùng này.")
 
             except Exception as roi_error:
+                # self.reset_camera_roi()
                 diagnostic_msg += f"\nLỗi khi điều chỉnh ROI: {roi_error}"
                 QMessageBox.warning(self, "Lỗi Điều Chỉnh ROI", diagnostic_msg)
                 self.frame_timer.start(33)
@@ -586,7 +547,7 @@ class BaslerCameraROITracker(QMainWindow):
         
         # Restart continuous frame capture
         self.frame_timer.start(33)
-        
+        # self.camera.Close()
         self.show_plot()
 
     def reset_tracking(self):
