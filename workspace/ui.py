@@ -1,177 +1,140 @@
-from PySide2.QtCore import *
-from PySide2.QtGui import *
-from PySide2.QtWidgets import *
+import pypylon.pylon as pylon
+import cv2
+import numpy as np
+from pyzbar.pyzbar import decode
 
+class QRCornerTracker:
+    def __init__(self):
+        # Camera setup
+        self.tlFactory = pylon.TlFactory.GetInstance()
+        devices = self.tlFactory.EnumerateDevices()
+        if len(devices) == 0:
+            raise RuntimeError("No Basler camera found")
+        
+        self.camera = pylon.InstantCamera(self.tlFactory.CreateDevice(devices[0]))
+        self.camera.Open()
+        
+        # Camera configuration
+        self.camera.ExposureTime.SetValue(20000.0)
+        self.camera.Width.SetValue(1000)
+        self.camera.Height.SetValue(1000)
+        self.camera.OffsetX.SetValue(711)
+        self.camera.OffsetY.SetValue(549)
+    
+    def find_qr_top_right_corner(self, image):
+        """Detect QR code and find its top-right corner"""
+        # Decode QR codes
+        qr_codes = decode(image)
+        
+        top_right_points = []
+        for qr in qr_codes:
+            # Get QR code polygon points
+            polygon = qr.polygon
+            
+            # Find the bounding rectangle
+            x, y, w, h = qr.rect
+            
+            # Sort points to find top-right corner
+            # Sort polygon points by their x + y values to identify top-right
+            sorted_points = sorted(polygon, key=lambda point: point.x + point.y)
+            top_right = sorted_points[-1]
+            
+            top_right_points.append({
+                'point': (top_right.x, top_right.y),
+                'roi': (x, y, w, h)
+            })
+        
+        return top_right_points
+    
+    def precise_corner_detection(self, image, roi):
+        """More precise corner detection using image processing"""
+        x, y, w, h = roi
+        
+        # Crop the ROI
+        roi_image = image[y:y+h, x:x+w]
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(roi_image, cv2.COLOR_BGR2GRAY)
+        
+        # Apply thresholding
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Find contours
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        # Find the contour with the largest area (likely the QR code)
+        max_contour = max(contours, key=cv2.contourArea)
+        
+        # Find convex hull to smooth out the contour
+        hull = cv2.convexHull(max_contour, returnPoints=True)
+        
+        # Find the point with the maximum x + y coordinates
+        top_right_local = max(hull, key=lambda point: point[0][0] + point[0][1])[0]
+        
+        # Adjust to global coordinates
+        top_right_global = (top_right_local[0] + x, top_right_local[1] + y)
+        
+        return top_right_global
+    
+    def track_corners(self):
+        """Track QR code corners"""
+        self.camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+        
+        try:
+            while self.camera.IsGrabbing():
+                grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+                
+                if grabResult.GrabSucceeded():
+                    # Convert image to BGR if needed
+                    image = grabResult.GetArray()
+                    if len(image.shape) == 2:
+                        image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+                    
+                    # Detect QR codes
+                    top_right_results = self.find_qr_top_right_corner(image)
+                    
+                    for result in top_right_results:
+                        # Get initial top-right point
+                        initial_point = result['point']
+                        roi = result['roi']
+                        
+                        # Get more precise corner
+                        precise_point = self.precise_corner_detection(image, roi)
+                        
+                        # Print coordinates
+                        print(f"Initial Top-Right: {initial_point}")
+                        print(f"Precise Top-Right: {precise_point}")
+                        
+                        # Draw initial point (blue)
+                        cv2.circle(image, initial_point, 5, (255, 0, 0), -1)
+                        
+                        # Draw precise point (red)
+                        cv2.circle(image, precise_point, 5, (0, 0, 255), -1)
+                        
+                        # Draw ROI rectangle
+                        x, y, w, h = roi
+                        cv2.rectangle(image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    
+                    # Display image
+                    cv2.namedWindow('QR Corner Tracking', cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow('QR Corner Tracking', 800, 800)
+                    cv2.imshow('QR Corner Tracking', image)
+                    
+                    # Exit if 'q' is pressed
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                
+                grabResult.Release()
+        
+        except Exception as e:
+            print(f"An error occurred: {e}")
+        
+        finally:
+            self.camera.StopGrabbing()
+            self.camera.Close()
+            cv2.destroyAllWindows()
 
-class Ui_MainWindow(object):
-    def setupUi(self, MainWindow):
-        if not MainWindow.objectName():
-            MainWindow.setObjectName(u"MainWindow")
-        MainWindow.resize(911, 579)
-        self.actionRealtime_with_Camera_Basler = QAction(MainWindow)
-        self.actionRealtime_with_Camera_Basler.setObjectName(u"actionRealtime_with_Camera_Basler")
-        self.actionVideo = QAction(MainWindow)
-        self.actionVideo.setObjectName(u"actionVideo")
-        self.centralwidget = QWidget(MainWindow)
-        self.centralwidget.setObjectName(u"centralwidget")
-        self.stackedWidget = QStackedWidget(self.centralwidget)
-        self.stackedWidget.setObjectName(u"stackedWidget")
-        self.stackedWidget.setEnabled(True)
-        self.stackedWidget.setGeometry(QRect(10, 10, 891, 521))
-        self.pageTrackingRealtime = QWidget()
-        self.pageTrackingRealtime.setObjectName(u"pageTrackingRealtime")
-        self.gridLayoutWidget = QWidget(self.pageTrackingRealtime)
-        self.gridLayoutWidget.setObjectName(u"gridLayoutWidget")
-        self.gridLayoutWidget.setGeometry(QRect(0, 120, 891, 401))
-        self.displayFrame = QGridLayout(self.gridLayoutWidget)
-        self.displayFrame.setObjectName(u"displayFrame")
-        self.displayFrame.setSizeConstraint(QLayout.SetDefaultConstraint)
-        self.displayFrame.setContentsMargins(0, 0, 0, 0)
-        self.buttonSetCameraFrameResolution = QPushButton(self.pageTrackingRealtime)
-        self.buttonSetCameraFrameResolution.setObjectName(u"buttonSetCameraFrameResolution")
-        self.buttonSetCameraFrameResolution.setGeometry(QRect(0, 0, 141, 28))
-        self.buttonSelectROICamera = QPushButton(self.pageTrackingRealtime)
-        self.buttonSelectROICamera.setObjectName(u"buttonSelectROICamera")
-        self.buttonSelectROICamera.setGeometry(QRect(150, 0, 181, 28))
-        self.buttonStopTrackingCamera = QPushButton(self.pageTrackingRealtime)
-        self.buttonStopTrackingCamera.setObjectName(u"buttonStopTrackingCamera")
-        self.buttonStopTrackingCamera.setGeometry(QRect(440, 0, 181, 28))
-        self.buttonStartTrackingCamera = QPushButton(self.pageTrackingRealtime)
-        self.buttonStartTrackingCamera.setObjectName(u"buttonStartTrackingCamera")
-        self.buttonStartTrackingCamera.setGeometry(QRect(340, 0, 93, 28))
-        self.textBrowser = QTextBrowser(self.pageTrackingRealtime)
-        self.textBrowser.setObjectName(u"textBrowser")
-        self.textBrowser.setGeometry(QRect(0, 40, 651, 71))
-        self.comboBoxChooseCamera = QComboBox(self.pageTrackingRealtime)
-        self.comboBoxChooseCamera.setObjectName(u"comboBoxChooseCamera")
-        self.comboBoxChooseCamera.setGeometry(QRect(660, 40, 231, 25))
-        self.label = QLabel(self.pageTrackingRealtime)
-        self.label.setObjectName(u"label")
-        self.label.setGeometry(QRect(660, 10, 121, 19))
-        self.buttonApplySettingsCamera = QPushButton(self.pageTrackingRealtime)
-        self.buttonApplySettingsCamera.setObjectName(u"buttonApplySettingsCamera")
-        self.buttonApplySettingsCamera.setGeometry(QRect(660, 70, 121, 28))
-        self.stackedWidget.addWidget(self.pageTrackingRealtime)
-        self.pageTrackingVideo = QWidget()
-        self.pageTrackingVideo.setObjectName(u"pageTrackingVideo")
-        self.buttonSelectROIVideo = QPushButton(self.pageTrackingVideo)
-        self.buttonSelectROIVideo.setObjectName(u"buttonSelectROIVideo")
-        self.buttonSelectROIVideo.setGeometry(QRect(420, 0, 181, 28))
-        self.buttonStopTrackingVideo = QPushButton(self.pageTrackingVideo)
-        self.buttonStopTrackingVideo.setObjectName(u"buttonStopTrackingVideo")
-        self.buttonStopTrackingVideo.setGeometry(QRect(710, 0, 181, 28))
-        self.buttonSetResolutionTrackingVideo = QPushButton(self.pageTrackingVideo)
-        self.buttonSetResolutionTrackingVideo.setObjectName(u"buttonSetResolutionTrackingVideo")
-        self.buttonSetResolutionTrackingVideo.setGeometry(QRect(270, 0, 141, 28))
-        self.textBrowserTrackingVideo = QTextBrowser(self.pageTrackingVideo)
-        self.textBrowserTrackingVideo.setObjectName(u"textBrowserTrackingVideo")
-        self.textBrowserTrackingVideo.setGeometry(QRect(0, 40, 891, 71))
-        self.pushStartTrackingVideo = QPushButton(self.pageTrackingVideo)
-        self.pushStartTrackingVideo.setObjectName(u"pushStartTrackingVideo")
-        self.pushStartTrackingVideo.setGeometry(QRect(610, 0, 93, 28))
-        self.gridLayoutWidget_2 = QWidget(self.pageTrackingVideo)
-        self.gridLayoutWidget_2.setObjectName(u"gridLayoutWidget_2")
-        self.gridLayoutWidget_2.setGeometry(QRect(0, 120, 891, 401))
-        self.displayFrameVideo = QGridLayout(self.gridLayoutWidget_2)
-        self.displayFrameVideo.setObjectName(u"displayFrameVideo")
-        self.displayFrameVideo.setSizeConstraint(QLayout.SetDefaultConstraint)
-        self.displayFrameVideo.setContentsMargins(0, 0, 0, 0)
-        self.buttonChooseVideo = QPushButton(self.pageTrackingVideo)
-        self.buttonChooseVideo.setObjectName(u"buttonChooseVideo")
-        self.buttonChooseVideo.setGeometry(QRect(0, 0, 151, 28))
-        self.stackedWidget.addWidget(self.pageTrackingVideo)
-        self.pageCameraSettings = QWidget()
-        self.pageCameraSettings.setObjectName(u"pageCameraSettings")
-        self.label_2 = QLabel(self.pageCameraSettings)
-        self.label_2.setObjectName(u"label_2")
-        self.label_2.setGeometry(QRect(0, 0, 571, 51))
-        font = QFont()
-        font.setFamily(u"Segoe UI")
-        font.setPointSize(18)
-        font.setBold(True)
-        font.setWeight(75)
-        self.label_2.setFont(font)
-        self.sliderXResolution = QSlider(self.pageCameraSettings)
-        self.sliderXResolution.setObjectName(u"sliderXResolution")
-        self.sliderXResolution.setGeometry(QRect(0, 90, 881, 22))
-        self.sliderXResolution.setOrientation(Qt.Horizontal)
-        self.label_3 = QLabel(self.pageCameraSettings)
-        self.label_3.setObjectName(u"label_3")
-        self.label_3.setGeometry(QRect(0, 60, 161, 19))
-        self.label_4 = QLabel(self.pageCameraSettings)
-        self.label_4.setObjectName(u"label_4")
-        self.label_4.setGeometry(QRect(0, 120, 161, 19))
-        self.sliderYResolution = QSlider(self.pageCameraSettings)
-        self.sliderYResolution.setObjectName(u"sliderYResolution")
-        self.sliderYResolution.setGeometry(QRect(0, 150, 881, 22))
-        self.sliderYResolution.setOrientation(Qt.Horizontal)
-        self.sliderExposureTime = QSlider(self.pageCameraSettings)
-        self.sliderExposureTime.setObjectName(u"sliderExposureTime")
-        self.sliderExposureTime.setGeometry(QRect(0, 210, 881, 22))
-        self.sliderExposureTime.setOrientation(Qt.Horizontal)
-        self.label_5 = QLabel(self.pageCameraSettings)
-        self.label_5.setObjectName(u"label_5")
-        self.label_5.setGeometry(QRect(0, 180, 161, 19))
-        self.label_6 = QLabel(self.pageCameraSettings)
-        self.label_6.setObjectName(u"label_6")
-        self.label_6.setGeometry(QRect(0, 240, 251, 19))
-        self.sliderAcquisitionFrameRate = QSlider(self.pageCameraSettings)
-        self.sliderAcquisitionFrameRate.setObjectName(u"sliderAcquisitionFrameRate")
-        self.sliderAcquisitionFrameRate.setGeometry(QRect(0, 270, 881, 22))
-        self.sliderAcquisitionFrameRate.setOrientation(Qt.Horizontal)
-        self.stackedWidget.addWidget(self.pageCameraSettings)
-        MainWindow.setCentralWidget(self.centralwidget)
-        self.menubar = QMenuBar(MainWindow)
-        self.menubar.setObjectName(u"menubar")
-        self.menubar.setGeometry(QRect(0, 0, 911, 26))
-        self.menuTrackingRealtime = QMenu(self.menubar)
-        self.menuTrackingRealtime.setObjectName(u"menuTrackingRealtime")
-        self.menuTrackingVideo = QMenu(self.menubar)
-        self.menuTrackingVideo.setObjectName(u"menuTrackingVideo")
-        self.menuCameraSettings = QMenu(self.menubar)
-        self.menuCameraSettings.setObjectName(u"menuCameraSettings")
-        MainWindow.setMenuBar(self.menubar)
-        self.statusbar = QStatusBar(MainWindow)
-        self.statusbar.setObjectName(u"statusbar")
-        MainWindow.setStatusBar(self.statusbar)
-
-        self.menubar.addAction(self.menuTrackingRealtime.menuAction())
-        self.menubar.addAction(self.menuTrackingVideo.menuAction())
-        self.menubar.addAction(self.menuCameraSettings.menuAction())
-
-        self.retranslateUi(MainWindow)
-
-        self.stackedWidget.setCurrentIndex(2)
-
-
-        QMetaObject.connectSlotsByName(MainWindow)
-    # setupUi
-
-    def retranslateUi(self, MainWindow):
-        MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"MainWindow", None))
-        self.actionRealtime_with_Camera_Basler.setText(QCoreApplication.translate("MainWindow", u"Realtime with Camera Basler", None))
-        self.actionVideo.setText(QCoreApplication.translate("MainWindow", u"Video", None))
-#if QT_CONFIG(accessibility)
-        self.stackedWidget.setAccessibleDescription("")
-#endif // QT_CONFIG(accessibility)
-        self.buttonSetCameraFrameResolution.setText(QCoreApplication.translate("MainWindow", u"Set Resolution", None))
-        self.buttonSelectROICamera.setText(QCoreApplication.translate("MainWindow", u"Capture and Select ROI", None))
-        self.buttonStopTrackingCamera.setText(QCoreApplication.translate("MainWindow", u"Stop and Show Statics", None))
-        self.buttonStartTrackingCamera.setText(QCoreApplication.translate("MainWindow", u"Start", None))
-        self.label.setText(QCoreApplication.translate("MainWindow", u"Choose Camera", None))
-        self.buttonApplySettingsCamera.setText(QCoreApplication.translate("MainWindow", u"Apply Settings", None))
-        self.buttonSelectROIVideo.setText(QCoreApplication.translate("MainWindow", u"Capture and Select ROI", None))
-        self.buttonStopTrackingVideo.setText(QCoreApplication.translate("MainWindow", u"Stop and Show Statics", None))
-        self.buttonSetResolutionTrackingVideo.setText(QCoreApplication.translate("MainWindow", u"Set Resolution", None))
-        self.pushStartTrackingVideo.setText(QCoreApplication.translate("MainWindow", u"Start", None))
-        self.buttonChooseVideo.setText(QCoreApplication.translate("MainWindow", u"Choose Videos ...", None))
-        self.label_2.setText(QCoreApplication.translate("MainWindow", u"Basler Camera Settings", None))
-        self.label_3.setText(QCoreApplication.translate("MainWindow", u"X resolution", None))
-        self.label_4.setText(QCoreApplication.translate("MainWindow", u"Y resolution", None))
-        self.label_5.setText(QCoreApplication.translate("MainWindow", u"ExposureTime", None))
-        self.label_6.setText(QCoreApplication.translate("MainWindow", u"Acquisition Frame Rate", None))
-        self.menuTrackingRealtime.setTitle(QCoreApplication.translate("MainWindow", u"Tracking realtime with Basler Camera", None))
-        self.menuTrackingVideo.setTitle(QCoreApplication.translate("MainWindow", u"Tracking Video", None))
-        self.menuCameraSettings.setTitle(QCoreApplication.translate("MainWindow", u"Camera Settings", None))
-    # retranslateUi
-
+# Run tracking
+if __name__ == "__main__":
+    tracker = QRCornerTracker()
+    tracker.track_corners()

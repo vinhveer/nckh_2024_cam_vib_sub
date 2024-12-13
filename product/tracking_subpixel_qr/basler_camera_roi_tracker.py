@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (QApplication, QLabel, QMainWindow, QPushButton,
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt, QTimer
 from pypylon import pylon
+from pyzbar import pyzbar
 import matplotlib.pyplot as plt
 
 from camera_selection_dialog import CameraSelectionDialog
@@ -141,7 +142,7 @@ class BaslerCameraROITracker(QMainWindow):
 
     def adjust_camera_roi(self):
         """
-        Chọn ROI với chẩn đoán chi tiết và xử lý căn chỉnh động
+        Chọn ROI bằng cách quét mã QR và theo dõi vị trí
         """
         # Dừng timer để tránh việc liên tục chụp khung hình
         self.frame_timer.stop()
@@ -152,18 +153,94 @@ class BaslerCameraROITracker(QMainWindow):
                 QMessageBox.critical(self, "Lỗi", "Camera không được mở")
                 return
 
-            # Khởi tạo thông điệp chẩn đoán
-            diagnostic_msg = "Thông tin điều chỉnh ROI:\n"
-            
+            # Dừng grabbing nếu đang chạy
+            if self.camera.IsGrabbing():
+                self.camera.StopGrabbing()
+
+            # Khởi tạo cờ để theo dõi việc chọn ROI
+            roi_selected = False
+            qr_location = None
+
+            # Chuẩn bị cửa sổ để hiển thị
+            cv2.namedWindow("QR Code Tracking", cv2.WINDOW_NORMAL)
+
+            while not roi_selected:
+                # Chụp khung hình
+                try:
+                    grab_result = self.camera.GrabOne(10000)
+                    if grab_result is None or not grab_result.GrabSucceeded():
+                        QMessageBox.critical(self, "Lỗi", "Không thể chụp khung hình")
+                        self.frame_timer.start(33)
+                        return
+
+                    # Chuyển đổi khung hình
+                    current_frame = grab_result.Array
+                    
+                    # Kiểm tra khung hình
+                    if current_frame is None or current_frame.size == 0:
+                        QMessageBox.critical(self, "Lỗi", "Không có dữ liệu khung hình")
+                        self.frame_timer.start(33)
+                        return
+
+                except Exception as grab_error:
+                    QMessageBox.critical(self, "Lỗi Chụp Khung Hình", f"Không thể chụp khung hình: {grab_error}")
+                    self.frame_timer.start(33)
+                    return
+
+                # Chuyển đổi sang ảnh xám
+                gray = cv2.cvtColor(current_frame, cv2.COLOR_BGR2GRAY)
+
+                # Quét mã QR
+                qr_codes = pyzbar.decode(gray)
+
+                # Vẽ và theo dõi mã QR
+                for qr in qr_codes:
+                    # Lấy toạ độ
+                    (x, y, w, h) = qr.rect
+                    
+                    # Vẽ hình chữ nhật xung quanh mã QR
+                    cv2.rectangle(current_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                    
+                    # Hiển thị thông tin mã QR
+                    qr_data = qr.data.decode("utf-8")
+                    cv2.putText(current_frame, qr_data, (x, y - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+                # Hiển thị khung hình
+                cv2.imshow("QR Code Tracking", current_frame)
+
+                # Chờ phím Enter để chọn ROI
+                key = cv2.waitKey(1) & 0xFF
+                if key == 13:  # Phím Enter
+                    if qr_codes:
+                        qr_location = qr_codes[0].rect
+                        roi_selected = True
+                    else:
+                        QMessageBox.warning(self, "Cảnh Báo", "Không tìm thấy mã QR. Tiếp tục quét.")
+
+                # Thoát nếu nhấn 'q'
+                elif key == ord('q'):
+                    self.frame_timer.start(33)
+                    cv2.destroyWindow("QR Code Tracking")
+                    return
+
+            # Đóng cửa sổ tracking
+            cv2.destroyWindow("QR Code Tracking")
+
+            # Nếu không có mã QR
+            if not qr_location:
+                QMessageBox.warning(self, "Lỗi", "Không thể xác định ROI")
+                self.frame_timer.start(33)
+                return
+
             # Lấy các tham số căn chỉnh của camera
             try:
-                # Lấy thông số căn chỉnh (increment) cho Width và Height
+                # Lấy thông số căn chỉnh (increment) và giá trị Min/Max
                 width_inc = getattr(self.camera.Width, 'Inc', 8)
                 height_inc = getattr(self.camera.Height, 'Inc', 8)
                 offset_x_inc = getattr(self.camera.OffsetX, 'Inc', 8)
                 offset_y_inc = getattr(self.camera.OffsetY, 'Inc', 8)
 
-                # Giá trị Min và Max
                 min_width = getattr(self.camera.Width, 'Min', 64)
                 max_width = getattr(self.camera.Width, 'Max', 2048)
                 min_height = getattr(self.camera.Height, 'Min', 64)
@@ -174,94 +251,25 @@ class BaslerCameraROITracker(QMainWindow):
                 max_offset_y = getattr(self.camera.OffsetY, 'Max', 2048)
 
             except Exception as attr_error:
-                diagnostic_msg += f"Không thể truy xuất thuộc tính: {attr_error}\n"
-                width_inc = height_inc = offset_x_inc = offset_y_inc = 8
-                min_width = min_height = 64
-                max_width = max_height = 2048
-                min_offset_x = min_offset_y = 0
-                max_offset_x = max_offset_y = 2048
-
-            # Dừng grabbing nếu đang chạy
-            if self.camera.IsGrabbing():
-                self.camera.StopGrabbing()
-
-            # Chụp khung hình với timeout dài hơn
-            try:
-                grab_result = self.camera.GrabOne(10000)  # Tăng timeout
-            except Exception as grab_error:
-                QMessageBox.critical(self, "Lỗi Chụp Khung Hình", f"Không thể chụp khung hình: {grab_error}")
+                QMessageBox.warning(self, "Lỗi Thuộc Tính", f"Không thể truy xuất thuộc tính: {attr_error}")
                 self.frame_timer.start(33)
                 return
 
-            # Kiểm tra grab result
-            if grab_result is None or not grab_result.GrabSucceeded():
-                QMessageBox.critical(self, "Lỗi", "Không thể chụp khung hình hoặc kết quả rỗng")
-                self.frame_timer.start(33)
-                return
-
-            # Chuyển đổi khung hình
-            try:
-                current_frame = grab_result.Array
-            except Exception as array_error:
-                QMessageBox.critical(self, "Lỗi", f"Không thể truy cập mảng hình ảnh: {array_error}")
-                self.frame_timer.start(33)
-                return
-
-            # Kiểm tra khung hình
-            if current_frame is None or current_frame.size == 0:
-                QMessageBox.critical(self, "Lỗi", "Không có dữ liệu khung hình")
-                self.frame_timer.start(33)
-                return
-
-            # Lấy kích thước khung hình
-            h, w = current_frame.shape[:2]
-            scaled_w, scaled_h = w // 2, h // 2
+            # Điều chỉnh toạ độ ROI
+            x, y, w, h = qr_location
             
-            # Thay đổi kích thước hình ảnh
-            scaled_image = cv2.resize(current_frame, (scaled_w, scaled_h))
-
-            # Chuyển đổi sang màu nếu cần
-            if len(scaled_image.shape) == 2:
-                scaled_image = cv2.cvtColor(scaled_image, cv2.COLOR_GRAY2BGR)
-
-            # Hiển thị cửa sổ để chọn ROI
-            cv2.imshow("Chọn ROI cho Camera", scaled_image)
-
-            # Chờ người dùng chọn ROI
-            roi = cv2.selectROI("Chọn ROI cho Camera", scaled_image, showCrosshair=True, fromCenter=False)
-
-            # Đóng cửa sổ hiển thị
-            cv2.destroyWindow("Chọn ROI cho Camera")
-
-            # Chuyển đổi toạ độ ROI về kích thước gốc
-            x, y, width, height = roi
-            original_x = int(x * 2)
-            original_y = int(y * 2)
-            original_w = int(width * 2)
-            original_h = int(height * 2)
-
             # Điều chỉnh để phù hợp với các ràng buộc của camera
-            # Căn chỉnh Width
-            original_w = max(min_width, min(original_w, max_width))
+            original_w = max(min_width, min(w, max_width))
             original_w = min_width + ((original_w - min_width) // width_inc * width_inc)
 
-            # Căn chỉnh Height
-            original_h = max(min_height, min(original_h, max_height))
+            original_h = max(min_height, min(h, max_height))
             original_h = min_height + ((original_h - min_height) // height_inc * height_inc)
 
-            # Căn chỉnh OffsetX
-            original_x = max(min_offset_x, min(original_x, max_offset_x - original_w))
+            original_x = max(min_offset_x, min(x, max_offset_x - original_w))
             original_x = min_offset_x + ((original_x - min_offset_x) // offset_x_inc * offset_x_inc)
 
-            # Căn chỉnh OffsetY
-            original_y = max(min_offset_y, min(original_y, max_offset_y - original_h))
+            original_y = max(min_offset_y, min(y, max_offset_y - original_h))
             original_y = min_offset_y + ((original_y - min_offset_y) // offset_y_inc * offset_y_inc)
-
-            # Kiểm tra ROI cuối cùng
-            if original_w <= 0 or original_h <= 0:
-                QMessageBox.warning(self, "Lỗi", "Chọn ROI không hợp lệ")
-                self.frame_timer.start(33)
-                return
 
             # Thiết lập ROI mới
             try:
@@ -283,12 +291,10 @@ class BaslerCameraROITracker(QMainWindow):
 
                 # Thông báo ROI mới
                 QMessageBox.information(self, "Cập Nhật ROI", 
-                    f"ROI mới: X:{original_x}, Y:{original_y}, Rộng:{original_w}, Cao:{original_h}\n"
-                    "Camera sẽ chụp trong vùng này.")
+                    f"ROI mới từ mã QR: X:{original_x}, Y:{original_y}, Rộng:{original_w}, Cao:{original_h}")
 
             except Exception as roi_error:
-                diagnostic_msg += f"\nLỗi khi điều chỉnh ROI: {roi_error}"
-                QMessageBox.warning(self, "Lỗi Điều Chỉnh ROI", diagnostic_msg)
+                QMessageBox.warning(self, "Lỗi Điều Chỉnh ROI", str(roi_error))
                 self.frame_timer.start(33)
 
         except Exception as general_error:
