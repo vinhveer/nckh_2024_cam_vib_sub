@@ -15,11 +15,9 @@ class QRCornerTracker:
         self.camera.Open()
         
         # Camera configuration
-        self.camera.ExposureTime.SetValue(2000.0)
-        self.camera.Width.SetValue(1000)
-        self.camera.Height.SetValue(1000)
-        self.camera.OffsetX.SetValue(711)
-        self.camera.OffsetY.SetValue(549)
+        self.camera.ExposureTime.SetValue(20000)
+        # self.camera.OffsetX.SetValue(0)
+        # self.camera.OffsetY.SetValue(0)
     
     def find_qr_top_right_corner(self, image):
         """Detect QR code and find its top-right corner"""

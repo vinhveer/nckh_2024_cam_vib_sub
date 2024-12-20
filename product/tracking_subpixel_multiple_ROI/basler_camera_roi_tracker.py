@@ -413,19 +413,6 @@ class BaslerCameraROITracker(QMainWindow):
             pixmap = QPixmap.fromImage(q_image)
             self.label_tracked.setPixmap(pixmap.scaled(self.label_tracked.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    # def start_tracking(self):
-    #     # Initial condition check
-    #     if self.template is None:
-    #         QMessageBox.warning(self, "Error", "Please select ROI first")
-    #         return
-
-    #     # Stop continuous frame capture
-    #     self.frame_timer.stop()
-        
-    #     # Tracking mode
-    #     self.is_tracking = True
-    #     self.track()
-
     def start_tracking(self):
         # Initial condition check
         if not self.templates:
@@ -441,60 +428,6 @@ class BaslerCameraROITracker(QMainWindow):
         # Tracking mode
         self.is_tracking = True
         self.track()
-
-    # def track(self):
-    #     prev_x, prev_y = None, None
-
-    #     while self.is_tracking:
-    #         try:
-    #             grabResult = self.camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
-    #             if grabResult.GrabSucceeded():
-    #                 current_frame = grabResult.Array
-    #                 x1, y1, x2, y2 = self.roi_rect
-    #                 center_x = round(float(x1 + x2) / 2, 8)
-    #                 center_y = round(float(y1 + y2) / 2, 8)
-
-    #                 result = EnhancedROITracker.template_match(current_frame, self.template, center_x, center_y, initial_search_area=100)
-
-    #                 if result:
-    #                     found_x, found_y, confidence = result
-    #                     w = x2 - x1
-    #                     h = y2 - y1
-    #                     new_x1 = round(found_x - w / 2, 8)
-    #                     new_y1 = round(found_y - h / 2, 8)
-    #                     new_x2 = round(new_x1 + w, 8)
-    #                     new_y2 = round(new_y1 + h, 8)
-    #                     self.roi_rect = (new_x1, new_y1, new_x2, new_y2)
-
-    #                     if prev_x is not None and prev_y is not None:
-    #                         dx = round(found_x - prev_x, 8)
-    #                         dy = round(found_y - prev_y, 8)
-    #                     else:
-    #                         dx = dy = 0.0
-
-    #                     self.tracking_data.append((found_x, found_y, confidence, dx, dy))
-    #                     prev_x, prev_y = found_x, found_y
-
-    #                     if len(current_frame.shape) == 2:
-    #                         current_frame = cv2.cvtColor(current_frame, cv2.COLOR_GRAY2BGR)
-
-    #                     cv2.rectangle(current_frame, (int(new_x1), int(new_y1)), (int(new_x2), int(new_y2)), (0, 255, 0), 2)
-    #                     self.display_image(current_frame)
-
-    #                     resulting_fps = round(self.camera.ResultingFrameRate.Value, 8)
-    #                     self.label_fps.setText(f"FPS: {resulting_fps:.8f}")
-
-    #                 self.frame_count += 1
-    #                 self.frame_count_label.setText(f"Frames: {self.frame_count}")
-
-    #                 QApplication.processEvents()
-    #             else:
-    #                 QMessageBox.warning(self, "Error", "Capture Error: Failed to grab image")
-    #                 self.stop_tracking()
-
-    #         except Exception as e:
-    #             QMessageBox.critical(self, "Error", str(e))
-    #             self.stop_tracking()
 
     def track(self):
         # Danh sách để lưu trạng thái tracking của từng điểm
